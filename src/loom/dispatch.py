@@ -68,7 +68,7 @@ async def run_dispatch(
     system = worker_prompt(str(working_directory))
 
     messages: list[UserMessage] = []
-    own = store.own(name)
+    own = store.read(name)
     if own:
         messages.append(UserMessage(content=render_self_context(name, own)))
     for source in source_threads:

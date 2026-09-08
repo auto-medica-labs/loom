@@ -65,9 +65,6 @@ class EpisodeStore:
         worker that died must never become context for the next one."""
         return [e for e in self._load(ok_only=True) if e.thread == thread]
 
-    def own(self, thread: str) -> list[Episode]:
-        return self.read(thread)
-
     def latest(self, thread: str) -> Episode | None:
         episodes = self.read(thread)
         return episodes[-1] if episodes else None
