@@ -1,0 +1,42 @@
+[project]
+name = "loom"
+version = "0.1.0"
+description = "Thread-and-episode orchestration built on Tau's agent engine."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["tau-ai>=0.4.1", "rich>=13.0"]
+
+[project.scripts]
+loom = "loom.cli:main"
+
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/loom"]
+
+[tool.uv.sources]
+tau-ai = { path = "../tau", editable = true }
+
+[dependency-groups]
+dev = ["mypy>=1.10", "pytest>=8.0", "ruff>=0.5"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+# Prompt prose is wrapped by the model, not the formatter.
+"src/loom/prompts.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["loom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
