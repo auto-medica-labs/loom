@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import sys
 import uuid
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from tau_agent.events import (
@@ -29,6 +30,13 @@ from loom.prompts import orchestrator_prompt
 from loom.threads import create_thread_tools
 
 
+def _get_version() -> str:
+    try:
+        return f"loom {version('loom')}"
+    except PackageNotFoundError:
+        return "loom unknown"
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="loom", description="Thread-and-episode orchestration on Tau."
@@ -43,6 +51,12 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Episode file (default: <cwd>/.loom/episodes.jsonl).",
     )
     parser.add_argument("--max-turns", type=int, default=32, help="Orchestrator turns.")
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=_get_version(),
+        help="Show the loom version and exit.",
+    )
     return parser.parse_args(argv)
 
 
