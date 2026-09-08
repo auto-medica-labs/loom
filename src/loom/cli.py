@@ -1,6 +1,6 @@
 """Print-mode orchestrator: `loom "refactor the parser"`.
 
-The orchestrator only holds thread tools; workers get Tau's coding tools.
+The orchestrator only holds thread tools; workers get Loom-native coding tools.
 """
 
 from __future__ import annotations
@@ -8,25 +8,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-import uuid
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Any
 
-from tau_agent.events import (
-    MessageEndEvent,
-    MessageUpdateEvent,
-    ToolExecutionEndEvent,
-    ToolExecutionStartEvent,
-)
-from tau_agent.loop import run_agent_loop
-from tau_agent.messages import AssistantMessage, UserMessage
-from tau_agent.provider_events import TextDeltaEvent
-from tau_agent.tools import AgentTool, AgentToolResult
-from tau_agent.types import JSONValue
-
-from loom.dispatch import error_text
-from loom.engine import build_engine
+from loom.agent import AgentError, TextDelta, Tool, ToolEnd, ToolStart, run_loop
+from loom.engine import build_engine, credential_path, load_credentials, save_credentials
 from loom.episodes import EpisodeStore
 from loom.prompts import orchestrator_prompt
 from loom.threads import create_thread_tools
@@ -41,11 +29,11 @@ def _get_version() -> str:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="loom", description="Thread-and-episode orchestration on Tau."
+        prog="loom", description="Thread-and-episode orchestration (any-llm engine)."
     )
     parser.add_argument("prompt", help="What to work on.")
-    parser.add_argument("--provider", default=None, help="Tau provider name.")
-    parser.add_argument("--model", default=None, help="Model id.")
+    parser.add_argument("--provider", default=None, help="any-llm provider name.")
+    parser.add_argument("--model", default=None, help="Model id ('provider:model' or plain).")
     parser.add_argument("--cwd", default=".", help="Working directory for workers.")
     parser.add_argument(
         "--store",
@@ -70,8 +58,7 @@ def _preview(text: str, limit: int = 220) -> str:
 EPISODE_PREVIEW = 300
 
 
-def _episode_lines(result: AgentToolResult) -> list[str]:
-    """One line per episode, whichever tool produced them."""
+def _episode_lines(result: Any) -> list[str]:
     details = result.details
     episodes = details.get("episodes") if isinstance(details, dict) else None
     if not isinstance(episodes, list):
@@ -83,19 +70,15 @@ def _episode_lines(result: AgentToolResult) -> list[str]:
         name = str(episode.get("name", "?"))
         text = str(episode.get("text", ""))
         marker = "!! " if text.startswith("Error:") else ""
-        lines.append(
-            f"<< {marker}{name} ({len(text):,} chars): {_preview(text, EPISODE_PREVIEW)}"
-        )
+        lines.append(f"<< {marker}{name} ({len(text):,} chars): {_preview(text, EPISODE_PREVIEW)}")
     return lines
 
 
-def _dispatch_label(arguments: Mapping[str, JSONValue]) -> str:
+def _dispatch_label(arguments: Mapping[str, Any]) -> str:
     items = arguments.get("items")
     if isinstance(items, list):
         names = [
-            str(item["name"])
-            for item in items
-            if isinstance(item, Mapping) and item.get("name")
+            str(item["name"]) for item in items if isinstance(item, Mapping) and item.get("name")
         ]
         return "batch: " + ", ".join(names)
     return f"thread {_preview(str(arguments.get('name', '')), 40)}"
@@ -109,13 +92,13 @@ async def _run(args: argparse.Namespace) -> None:
     )
 
     def on_worker_event(name: str, event: object) -> None:
-        if isinstance(event, ToolExecutionStartEvent):
+        if isinstance(event, ToolStart):
             print(f"    [{name}] {event.tool_name} {_preview(str(event.args))}")
-        elif isinstance(event, ToolExecutionEndEvent):
+        elif isinstance(event, ToolEnd):
             status = "error" if event.is_error else "ok"
             print(f"    [{name}] -> {status}: {_preview(event.result.text)}")
 
-    tools: list[AgentTool] = create_thread_tools(
+    tools: list[Tool] = create_thread_tools(
         provider=provider,
         model=model,
         worker_tools=worker_tools,
@@ -124,36 +107,64 @@ async def _run(args: argparse.Namespace) -> None:
         on_event=on_worker_event,
     )
 
-    async for event in run_agent_loop(
+    async for event in run_loop(
         provider=provider,
         model=model,
         system=orchestrator_prompt(str(cwd)),
-        messages=[UserMessage(content=args.prompt)],
+        messages=[{"role": "user", "content": args.prompt}],
         tools=tools,
         max_turns=args.max_turns,
-        session_id=uuid.uuid4().hex,
     ):
-        if isinstance(event, ToolExecutionStartEvent):
+        if isinstance(event, ToolStart):
             print(f"\n>> {_dispatch_label(event.args)}")
-        elif isinstance(event, ToolExecutionEndEvent):
+        elif isinstance(event, ToolEnd):
             for line in _episode_lines(event.result):
                 print(line)
             print()
-        elif isinstance(event, MessageUpdateEvent) and isinstance(
-            event.assistant_message_event, TextDeltaEvent
-        ):
-            print(event.assistant_message_event.delta, end="", flush=True)
-        elif isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
-            if event.message.text.strip():
-                print()
-            failure = error_text(event.message)
-            if failure:
-                print(f"error: {failure}", file=sys.stderr)
+        elif isinstance(event, TextDelta):
+            print(event.delta, end="", flush=True)
+        elif isinstance(event, AgentError):
+            print(f"error: {event.message}", file=sys.stderr)
 
     print(f"\nepisodes: {store.path}")
 
 
+def _redact(value: str) -> str:
+    return f"****{value[-4:]}" if len(value) > 4 else "****" if value else "(not set)"
+
+
+def _run_setup() -> None:
+    import getpass
+
+    current = load_credentials()
+    print(f"loom setup (saves to {credential_path()}, mode 600)\n")
+
+    def ask(label: str, key: str, *, secret: bool = False) -> str:
+        existing = current.get(key, "")
+        hint = _redact(existing) if secret else existing or "(not set)"
+        prompt = f"{label} [{hint}]: "
+        value = (getpass.getpass(prompt) if secret else input(prompt)).strip()
+        return value or existing
+
+    try:
+        data = {
+            "base_url": ask("Provider base URL", "base_url"),
+            "api_key": ask("Provider API key", "api_key", secret=True),
+            "model": ask("Model (provider:model)", "model"),
+            "provider": ask("Provider override (optional)", "provider"),
+        }
+    except (EOFError, KeyboardInterrupt):
+        print("\nsetup cancelled.")
+        return
+    path = save_credentials({k: v for k, v in data.items() if v})
+    print(f"saved to {path}")
+
+
 def main(argv: list[str] | None = None) -> None:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "setup":
+        _run_setup()
+        return
     args = _parse_args(argv)
     asyncio.run(_run(args))
 

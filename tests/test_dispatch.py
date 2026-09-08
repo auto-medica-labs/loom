@@ -1,54 +1,82 @@
-"""Dispatch behaviour with a deterministic Tau provider."""
+"""Dispatch behaviour with a deterministic any-llm fake."""
 
 from __future__ import annotations
 
 import asyncio
+import json
 import time
-from collections.abc import Mapping
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
+import any_llm
 import pytest
-from tau_agent.messages import AssistantMessage, TextContent, ToolCall, UserMessage
-from tau_agent.provider_events import (
-    AssistantDoneEvent,
-    AssistantStartEvent,
-    TextDeltaEvent,
-    ToolCallEndEvent,
-)
-from tau_agent.tools import AgentTool, AgentToolResult
-from tau_agent.types import JSONValue
-from tau_ai import FakeProvider
 
+from loom.agent import Tool, ToolResult
 from loom.dispatch import run_dispatch
 from loom.episodes import EpisodeStore
 from loom.threads import create_thread_tools, plan_waves
 
-MODEL = "fake"
+MODEL = "fake:model"
 
 
-def text_stream(text: str) -> list[object]:
-    """One assistant turn that answers with `text` and stops."""
-    return [
-        AssistantStartEvent(partial=AssistantMessage(model=MODEL)),
-        TextDeltaEvent(content_index=0, delta=text, partial=AssistantMessage(content=text)),
-        AssistantDoneEvent(
-            reason="stop",
-            message=AssistantMessage(content=[TextContent(text=text)], model=MODEL),
-        ),
-    ]
+class FakeLLM:
+    """Scripted any-llm client. `script` items are text or tool-call specs."""
+
+    def __init__(self, script: list[Any]):
+        self._script = list(script)
+        self.calls: list[list[dict[str, Any]]] = []
+        self._lock = asyncio.Lock()
+
+    async def acompletion(
+        self, *, model: str, messages: list[dict[str, Any]], tools: Any = None
+    ) -> Any:
+        async with self._lock:
+            self.calls.append([dict(m) for m in messages])
+            item = self._script.pop(0) if self._script else ""
+        if isinstance(item, dict) and "tool_calls" in item:
+            calls = [
+                SimpleNamespace(
+                    id=c["id"],
+                    function=SimpleNamespace(
+                        name=c["name"], arguments=json.dumps(c.get("args", {}))
+                    ),
+                )
+                for c in item["tool_calls"]
+            ]
+            msg = SimpleNamespace(content=item.get("text", ""), tool_calls=calls)
+        else:
+            msg = SimpleNamespace(content=item, tool_calls=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=msg)])
+
+
+@pytest.fixture
+def patch_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
+    fake = FakeLLM([])
+    monkeypatch.setattr(any_llm.AnyLLM, "create", lambda *a, **k: fake)
+    return fake
+
+
+def use_script(patch_llm: FakeLLM, script: list[Any]) -> FakeLLM:
+    patch_llm._script = list(script)
+    return patch_llm
 
 
 def store(tmp_path: Path) -> EpisodeStore:
     return EpisodeStore(tmp_path / "episodes.jsonl")
 
 
-def test_dispatch_returns_and_stores_the_episode(tmp_path: Path) -> None:
-    provider = FakeProvider([text_stream("wrote parser, tests pass")])
+def user_text(messages: list[dict[str, Any]]) -> str:
+    return " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
+
+
+def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["wrote parser, tests pass"])
     episodes = store(tmp_path)
 
     answer = asyncio.run(
         run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -61,15 +89,13 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path) -> None:
     assert [e.content for e in episodes.read("impl")] == ["wrote parser, tests pass"]
 
 
-def test_reused_thread_sees_its_own_history(tmp_path: Path) -> None:
-    provider = FakeProvider(
-        [text_stream("first pass"), text_stream("second pass")],
-    )
+def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["first pass", "second pass"])
     episodes = store(tmp_path)
 
     async def scenario() -> None:
         await run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -77,7 +103,7 @@ def test_reused_thread_sees_its_own_history(tmp_path: Path) -> None:
             action="start",
         )
         await run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -86,21 +112,18 @@ def test_reused_thread_sees_its_own_history(tmp_path: Path) -> None:
         )
 
     asyncio.run(scenario())
-    second_call_messages = provider.calls[1][2]
-    history = " ".join(m.text for m in second_call_messages if isinstance(m, UserMessage))
+    history = user_text(patch_llm.calls[1])
     assert "first pass" in history
     assert "continue" in history
 
 
-def test_source_thread_injects_only_its_latest_episode(tmp_path: Path) -> None:
-    provider = FakeProvider(
-        [text_stream("research v1"), text_stream("research v2"), text_stream("done")]
-    )
+def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["research v1", "research v2", "done"])
     episodes = store(tmp_path)
 
     async def scenario() -> None:
         await run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -108,7 +131,7 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path) -> None:
             action="look",
         )
         await run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -116,7 +139,7 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path) -> None:
             action="look again",
         )
         await run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -126,18 +149,16 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path) -> None:
         )
 
     asyncio.run(scenario())
-    injected = " ".join(m.text for m in provider.calls[2][2] if isinstance(m, UserMessage))
+    injected = user_text(patch_llm.calls[2])
     assert "research v2" in injected
     assert "research v1" not in injected
 
 
-def test_missing_source_thread_is_reported(tmp_path: Path) -> None:
-    provider = FakeProvider([])
+def test_missing_source_thread_is_reported(tmp_path: Path, patch_llm: FakeLLM) -> None:
     episodes = store(tmp_path)
-
     answer = asyncio.run(
         run_dispatch(
-            provider=provider,
+            provider="fake",
             model=MODEL,
             worker_tools=[],
             store=episodes,
@@ -146,17 +167,11 @@ def test_missing_source_thread_is_reported(tmp_path: Path) -> None:
             source_threads=["nope"],
         )
     )
-
     assert "no retained episode" in answer
     assert episodes.read("impl") == []
 
 
-def _user_text(call: tuple[str, str, list[object], list[object]]) -> str:
-    return " ".join(m.text for m in call[2] if isinstance(m, UserMessage))
-
-
-def _episodes(result: AgentToolResult) -> list[Mapping[str, str]]:
-    """The per-episode CLI metadata carried alongside the model-facing text."""
+def _episodes(result: ToolResult) -> list[dict[str, str]]:
     assert isinstance(result.details, dict)
     return list(result.details["episodes"])
 
@@ -185,48 +200,57 @@ def test_plan_waves_rejects_cycles() -> None:
         plan_waves(["a"], [["a"]])
 
 
-def test_batch_runs_independent_items_concurrently(tmp_path: Path) -> None:
-    wait = ToolCall(id="w", name="wait", arguments={})
-    provider = FakeProvider(
+def wait_tool() -> Tool:
+    async def execute(args: dict[str, Any]) -> ToolResult:
+        await asyncio.sleep(0.05)
+        return ToolResult(text="waited")
+
+    return Tool(
+        name="wait",
+        description="Sleep briefly.",
+        parameters={"type": "object", "properties": {}},
+        execute_fn=execute,
+    )
+
+
+def test_batch_runs_independent_items_concurrently(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(
+        patch_llm,
         [
-            tool_call_stream(wait),
-            tool_call_stream(wait),
-            text_stream("a done"),
-            text_stream("b done"),
-        ]
+            {"tool_calls": [{"id": "w1", "name": "wait"}]},
+            {"tool_calls": [{"id": "w2", "name": "wait"}]},
+            "a done",
+            "b done",
+        ],
     )
     episodes = store(tmp_path)
     tools = create_thread_tools(
-        provider=provider, model=MODEL, worker_tools=[wait_tool()], store=episodes
+        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes
     )
     batch = next(t for t in tools if t.name == "thread_batch")
 
     async def scenario() -> tuple[float, str]:
         start = time.monotonic()
         result = await batch.execute(
-            "1", {"items": [{"name": "a", "action": "one"}, {"name": "b", "action": "two"}]}
+            {"items": [{"name": "a", "action": "one"}, {"name": "b", "action": "two"}]}
         )
         return time.monotonic() - start, result.text
 
     elapsed, text = asyncio.run(scenario())
-    # Serial would be at least 2 x 0.05s of tool sleep.
     assert elapsed < 0.09
     assert "a done" in text and "b done" in text
     assert [e.content for e in episodes.read("a")] == ["a done"]
     assert [e.content for e in episodes.read("b")] == ["b done"]
 
 
-def test_batch_dependent_item_sees_its_sources(tmp_path: Path) -> None:
-    provider = FakeProvider(
-        [text_stream("a done"), text_stream("b done"), text_stream("synth done")]
-    )
+def test_batch_dependent_item_sees_its_sources(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["a done", "b done", "synth done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider=provider, model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
     batch = next(t for t in tools if t.name == "thread_batch")
 
-    async def scenario() -> AgentToolResult:
+    async def scenario() -> ToolResult:
         return await batch.execute(
-            "1",
             {
                 "items": [
                     {"name": "a", "action": "explore a"},
@@ -240,21 +264,19 @@ def test_batch_dependent_item_sees_its_sources(tmp_path: Path) -> None:
     assert "synth done" in result.text
     assert [e["name"] for e in _episodes(result)] == ["a", "b", "synth"]
     assert [e["text"] for e in _episodes(result)][2] == "synth done"
-    injected = next(_user_text(call) for call in provider.calls if "combine" in _user_text(call))
+    injected = next(user_text(c) for c in patch_llm.calls if "combine" in user_text(c))
     assert "a done" in injected and "b done" in injected
     assert [e.content for e in episodes.read("synth")] == ["synth done"]
 
 
-def test_batch_skips_dependent_when_source_fails(tmp_path: Path) -> None:
-    # One stream for two independent items: 'a' consumes it, 'b' answers nothing.
-    provider = FakeProvider([text_stream("a done")])
+def test_batch_skips_dependent_when_source_fails(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider=provider, model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
     batch = next(t for t in tools if t.name == "thread_batch")
 
-    async def scenario() -> AgentToolResult:
+    async def scenario() -> ToolResult:
         return await batch.execute(
-            "1",
             {
                 "items": [
                     {"name": "a", "action": "one"},
@@ -272,95 +294,65 @@ def test_batch_skips_dependent_when_source_fails(tmp_path: Path) -> None:
     assert episodes.read("synth") == []
 
 
-def test_batch_rejects_duplicate_names_before_dispatching(tmp_path: Path) -> None:
-    provider = FakeProvider([])
+def test_batch_rejects_duplicate_names_before_dispatching(
+    tmp_path: Path, patch_llm: FakeLLM
+) -> None:
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider=provider, model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
     batch = next(t for t in tools if t.name == "thread_batch")
-
-    async def scenario() -> str:
-        result = await batch.execute(
-            "1", {"items": [{"name": "a", "action": "one"}, {"name": "a", "action": "two"}]}
-        )
-        return result.text
-
-    text = asyncio.run(scenario())
+    text = asyncio.run(
+        batch.execute({"items": [{"name": "a", "action": "one"}, {"name": "a", "action": "two"}]})
+    ).text
     assert "Duplicate thread name 'a'" in text
     assert episodes.names() == []
 
 
-def test_thread_result_carries_its_single_episode(tmp_path: Path) -> None:
-    provider = FakeProvider([text_stream("a done")])
+def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider=provider, model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
     thread = next(t for t in tools if t.name == "thread")
-
-    result = asyncio.run(thread.execute("1", {"name": "impl", "action": "one"}))
+    result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
     assert [e["name"] for e in _episodes(result)] == ["impl"]
     assert _episodes(result)[0]["text"] == "a done"
 
 
-def test_threads_tool_lists_threads_and_counts(tmp_path: Path) -> None:
-    provider = FakeProvider([text_stream("a"), text_stream("b")])
+def test_threads_tool_lists_threads_and_counts(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["a", "b"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider=provider, model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
     thread = next(t for t in tools if t.name == "thread")
     listing = next(t for t in tools if t.name == "threads")
 
     async def scenario() -> str:
-        await thread.execute("1", {"name": "impl", "action": "one"})
-        await thread.execute("2", {"name": "impl", "action": "two"})
-        return (await listing.execute("3", {})).text
+        await thread.execute({"name": "impl", "action": "one"})
+        await thread.execute({"name": "impl", "action": "two"})
+        return (await listing.execute({})).text
 
     assert asyncio.run(scenario()) == "Active threads:\n- impl | 2 episodes"
 
 
-def tool_call_stream(call: ToolCall) -> list[object]:
-    """One assistant turn that calls `call` instead of answering."""
-    return [
-        AssistantStartEvent(partial=AssistantMessage(model=MODEL)),
-        ToolCallEndEvent(content_index=0, tool_call=call, partial=AssistantMessage(content=[call])),
-        AssistantDoneEvent(
-            reason="toolUse",
-            message=AssistantMessage(content=[call], model=MODEL),
-        ),
-    ]
-
-
-def wait_tool() -> AgentTool:
-    async def execute(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: object = None,
-        on_update: object = None,
-    ) -> AgentToolResult:
-        await asyncio.sleep(0.05)
-        return AgentToolResult(content=[TextContent(text="waited")])
-
-    return AgentTool(
-        name="wait",
-        label="wait",
-        description="Sleep briefly.",
-        parameters={"type": "object", "properties": {}},
-        execute_fn=execute,
-    )
-
-
-def test_thread_tool_rejects_a_second_concurrent_dispatch(tmp_path: Path) -> None:
-    call = ToolCall(id="c1", name="wait", arguments={})
-    provider = FakeProvider(
-        [tool_call_stream(call), text_stream("slow done"), text_stream("second")]
+def test_thread_tool_rejects_a_second_concurrent_dispatch(
+    tmp_path: Path, patch_llm: FakeLLM
+) -> None:
+    use_script(
+        patch_llm,
+        [
+            {"tool_calls": [{"id": "c1", "name": "wait"}]},
+            "slow done",
+            "second",
+        ],
     )
     episodes = store(tmp_path)
     tools = create_thread_tools(
-        provider=provider, model=MODEL, worker_tools=[wait_tool()], store=episodes
+        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes
     )
     thread = next(t for t in tools if t.name == "thread")
 
     async def scenario() -> str:
-        first = asyncio.create_task(thread.execute("1", {"name": "impl", "action": "one"}))
+        first = asyncio.create_task(thread.execute({"name": "impl", "action": "one"}))
         await asyncio.sleep(0.01)
-        second = await thread.execute("2", {"name": "impl", "action": "two"})
+        second = await thread.execute({"name": "impl", "action": "two"})
         await first
         return second.text
 

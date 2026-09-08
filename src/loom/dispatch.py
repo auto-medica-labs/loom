@@ -5,13 +5,9 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Any
 
-from tau_agent.events import AgentEvent, MessageEndEvent
-from tau_agent.loop import run_agent_loop
-from tau_agent.messages import AssistantMessage, UserMessage
-from tau_agent.provider import CancellationToken, ModelProvider
-from tau_agent.tools import AgentTool
-
+from loom.agent import AgentError, AssistantEnd, Event, Tool, run_loop
 from loom.episodes import (
     CANCELLED,
     ERROR,
@@ -27,28 +23,14 @@ from loom.prompts import worker_prompt
 DEFAULT_TIMEOUT_SECS = 1800.0
 DEFAULT_MAX_TURNS = 64
 
-WorkerListener = Callable[[str, AgentEvent], None]
-
-
-def error_text(message: AssistantMessage) -> str:
-    """Why a model turn produced nothing: provider error or diagnostic."""
-    if message.error_message:
-        return message.error_message
-    for diagnostic in message.diagnostics or ():
-        if diagnostic.error is not None and diagnostic.error.message:
-            return diagnostic.error.message
-        details = diagnostic.details or {}
-        body = details.get("body") or details.get("message") or ""
-        if body:
-            return f"{diagnostic.type}: {body}"
-    return ""
+WorkerListener = Callable[[str, Event], None]
 
 
 async def run_dispatch(
     *,
-    provider: ModelProvider,
+    provider: str | None,
     model: str,
-    worker_tools: Sequence[AgentTool],
+    worker_tools: Sequence[Tool],
     store: EpisodeStore,
     name: str,
     action: str,
@@ -56,7 +38,6 @@ async def run_dispatch(
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
     max_turns: int = DEFAULT_MAX_TURNS,
-    signal: CancellationToken | None = None,
     on_event: WorkerListener | None = None,
 ) -> str:
     """Run one action in a worker and return the episode it handed back.
@@ -67,40 +48,36 @@ async def run_dispatch(
     """
     system = worker_prompt(str(working_directory))
 
-    messages: list[UserMessage] = []
+    messages: list[dict[str, Any]] = []
     own = store.read(name)
     if own:
-        messages.append(UserMessage(content=render_self_context(name, own)))
+        messages.append({"role": "user", "content": render_self_context(name, own)})
     for source in source_threads:
         episode = store.latest(source)
         if episode is None:
             return f"Error: source thread '{source}' has no retained episode."
-        messages.append(UserMessage(content=render_source_context(episode)))
-    messages.append(UserMessage(content=action))
+        messages.append({"role": "user", "content": render_source_context(episode)})
+    messages.append({"role": "user", "content": action})
 
     final = ""
     error = ""
 
     async def consume() -> None:
         nonlocal final, error
-        async for event in run_agent_loop(
+        async for event in run_loop(
             provider=provider,
             model=model,
             system=system,
-            messages=list(messages),
+            messages=messages,
             tools=list(worker_tools),
             max_turns=max_turns,
-            signal=signal,
         ):
             if on_event is not None:
                 on_event(name, event)
-            if isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
-                text = event.message.text.strip()
-                if text:
-                    final = text
-                failure = error_text(event.message)
-                if failure:
-                    error = failure
+            if isinstance(event, AssistantEnd) and event.text.strip():
+                final = event.text.strip()
+            elif isinstance(event, AgentError):
+                error = event.message
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout_secs)

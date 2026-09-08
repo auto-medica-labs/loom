@@ -1,10 +1,10 @@
 [project]
 name = "loom"
 version = "0.1.0"
-description = "Thread-and-episode orchestration built on Tau's agent engine."
+description = "Thread-and-episode orchestration on its own any-llm engine."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["tau-ai>=0.4.1", "rich>=13.0"]
+dependencies = ["any-llm-sdk", "rich>=13.0"]
 
 [project.scripts]
 loom = "loom.cli:main"

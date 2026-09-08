@@ -5,42 +5,36 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
-from tau_agent.messages import TextContent
-from tau_agent.provider import ModelProvider
-from tau_agent.tools import AgentTool, AgentToolResult, ToolCancellationToken, ToolUpdateCallback
-from tau_agent.types import JSONValue
-
+from loom.agent import Tool, ToolResult
 from loom.dispatch import DEFAULT_TIMEOUT_SECS, WorkerListener, run_dispatch
 from loom.episodes import EpisodeStore, render_thread_document
 
 
-def _result(text: str) -> AgentToolResult:
-    return AgentToolResult(content=[TextContent(text=text)])
+def _result(text: str) -> ToolResult:
+    return ToolResult(text=text, is_error=text.startswith("Error:"))
 
 
-def _with_episodes(text: str, episodes: Sequence[tuple[str, str]]) -> AgentToolResult:
-    """Episode text for the model, plus per-episode details for the CLI.
-
-    `details` is never sent to a provider, so this costs no tokens.
-    """
-    return AgentToolResult(
-        content=[TextContent(text=text)],
+def _with_episodes(text: str, episodes: Sequence[tuple[str, str]]) -> ToolResult:
+    return ToolResult(
+        text=text,
+        is_error=False,
         details={"episodes": [{"name": name, "text": body} for name, body in episodes]},
     )
 
 
-def _text(arguments: Mapping[str, JSONValue], key: str) -> str:
+def _text(arguments: Mapping[Any, Any], key: str) -> str:
     value = arguments.get(key)
     return str(value) if value is not None else ""
 
 
-def _number(arguments: Mapping[str, JSONValue], key: str) -> float | None:
+def _number(arguments: Mapping[Any, Any], key: str) -> float | None:
     value = arguments.get(key)
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def _string_list(arguments: Mapping[str, JSONValue], key: str) -> list[str]:
+def _string_list(arguments: Mapping[Any, Any], key: str) -> list[str]:
     value = arguments.get(key)
     if not isinstance(value, list):
         return []
@@ -97,14 +91,14 @@ def plan_waves(
 
 def create_thread_tools(
     *,
-    provider: ModelProvider,
+    provider: str | None,
     model: str,
-    worker_tools: Sequence[AgentTool],
+    worker_tools: Sequence[Tool],
     store: EpisodeStore,
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
     on_event: WorkerListener | None = None,
-) -> list[AgentTool]:
+) -> list[Tool]:
     """Tools for an orchestrator that cannot touch files itself.
 
     Everything it can do is: hand a bounded action to a worker, and read back
@@ -112,21 +106,15 @@ def create_thread_tools(
     """
     active: set[str] = set()
 
-    async def dispatch(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, on_update
-        name = _text(arguments, "name")
-        action = _text(arguments, "action")
+    async def dispatch(args: dict[str, Any]) -> ToolResult:
+        name = _text(args, "name")
+        action = _text(args, "action")
         if not name or not action:
             return _result("Error: thread requires 'name' and 'action'.")
         if name in active:
             return _result(f"Error: thread '{name}' is already running; retry after it completes.")
 
-        timeout = _number(arguments, "timeout") or timeout_secs
+        timeout = _number(args, "timeout") or timeout_secs
         active.add(name)
         try:
             episode = await run_dispatch(
@@ -136,24 +124,17 @@ def create_thread_tools(
                 store=store,
                 name=name,
                 action=action,
-                source_threads=_string_list(arguments, "threads"),
+                source_threads=_string_list(args, "threads"),
                 working_directory=working_directory,
                 timeout_secs=timeout,
-                signal=signal,
                 on_event=on_event,
             )
         finally:
             active.discard(name)
         return _with_episodes(episode, [(name, episode)])
 
-    async def dispatch_batch(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, on_update
-        items = arguments.get("items")
+    async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
+        items = args.get("items")
         if not isinstance(items, list) or not items:
             return _result("Error: thread_batch requires a non-empty 'items' list.")
 
@@ -180,8 +161,7 @@ def create_thread_tools(
         busy = sorted(set(names) & active)
         if busy:
             return _result(
-                f"Error: thread(s) {', '.join(busy)} already running; "
-                f"retry after they complete."
+                f"Error: thread(s) {', '.join(busy)} already running; retry after they complete."
             )
 
         results: dict[int, str] = {}
@@ -214,7 +194,6 @@ def create_thread_tools(
                             source_threads=sources[index],
                             working_directory=working_directory,
                             timeout_secs=timeouts[index] or timeout_secs,
-                            signal=signal,
                             on_event=on_event,
                         )
                         for index in runnable
@@ -235,35 +214,22 @@ def create_thread_tools(
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
         return _with_episodes(body, [(names[i], results[i]) for i in range(len(names))])
 
-    async def list_threads(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, arguments, signal, on_update
+    async def list_threads(args: dict[str, Any]) -> ToolResult:
         names = store.names()
         if not names:
             return _result("No active threads in this session.")
         lines = [f"- {name} | {store.count(name)} episodes" for name in names]
         return _result("Active threads:\n" + "\n".join(lines))
 
-    async def read_thread(
-        tool_call_id: str,
-        arguments: Mapping[str, JSONValue],
-        signal: ToolCancellationToken | None = None,
-        on_update: ToolUpdateCallback | None = None,
-    ) -> AgentToolResult:
-        del tool_call_id, signal, on_update
-        name = _text(arguments, "name")
+    async def read_thread(args: dict[str, Any]) -> ToolResult:
+        name = _text(args, "name")
         if not name:
             return _result("Error: thread_read requires 'name'.")
         return _result(render_thread_document(name, store.read(name)))
 
     return [
-        AgentTool(
+        Tool(
             name="thread",
-            label="thread",
             description=(
                 "Dispatch a named worker thread. The worker reuses its own retained "
                 "history and can read the latest retained episode of each named source "
@@ -272,39 +238,21 @@ def create_thread_tools(
             parameters={
                 "type": "object",
                 "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Thread name. Creates if new, reuses if existing.",
-                    },
-                    "action": {
-                        "type": "string",
-                        "description": "One bounded action for the worker.",
-                    },
-                    "threads": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": (
-                            "Thread names whose latest retained episode should be loaded."
-                        ),
-                    },
-                    "timeout": {
-                        "type": "number",
-                        "description": "Timeout in seconds for this dispatch.",
-                    },
+                    "name": {"type": "string"},
+                    "action": {"type": "string"},
+                    "threads": {"type": "array", "items": {"type": "string"}},
+                    "timeout": {"type": "number"},
                 },
                 "required": ["name", "action"],
             },
             execute_fn=dispatch,
         ),
-        AgentTool(
+        Tool(
             name="thread_batch",
-            label="thread_batch",
             description=(
                 "Dispatch several threads as one batch. Items with no dependency on "
                 "another item in this batch run concurrently; an item that names "
-                "another batch item as a source waits for it and receives its episode. "
-                "Use this instead of several separate thread calls when the actions "
-                "are independent."
+                "another batch item as a source waits for it and receives its episode."
             ),
             parameters={
                 "type": "object",
@@ -314,23 +262,10 @@ def create_thread_tools(
                         "items": {
                             "type": "object",
                             "properties": {
-                                "name": {"type": "string", "description": "Thread name."},
-                                "action": {
-                                    "type": "string",
-                                    "description": "One bounded action for the worker.",
-                                },
-                                "threads": {
-                                    "type": "array",
-                                    "items": {"type": "string"},
-                                    "description": (
-                                        "Source thread names. Naming another item in this "
-                                        "batch makes this item wait for it."
-                                    ),
-                                },
-                                "timeout": {
-                                    "type": "number",
-                                    "description": "Timeout in seconds for this dispatch.",
-                                },
+                                "name": {"type": "string"},
+                                "action": {"type": "string"},
+                                "threads": {"type": "array", "items": {"type": "string"}},
+                                "timeout": {"type": "number"},
                             },
                             "required": ["name", "action"],
                         },
@@ -340,20 +275,18 @@ def create_thread_tools(
             },
             execute_fn=dispatch_batch,
         ),
-        AgentTool(
+        Tool(
             name="threads",
-            label="threads",
             description="List threads in this session and their episode counts.",
             parameters={"type": "object", "properties": {}},
             execute_fn=list_threads,
         ),
-        AgentTool(
+        Tool(
             name="thread_read",
-            label="thread_read",
             description="Read the full retained episode history for one thread.",
             parameters={
                 "type": "object",
-                "properties": {"name": {"type": "string", "description": "Thread name."}},
+                "properties": {"name": {"type": "string"}},
                 "required": ["name"],
             },
             execute_fn=read_thread,
