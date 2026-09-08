@@ -19,6 +19,8 @@ Prefer bounded, information-dense thread dispatches over long in-context reasoni
 When the codebase area or failure mode is unclear, dispatch research before implementation.
 Prefer to externalize high-leverage artifacts first: understanding of the relevant code, likely approach, verification strategy, and current blocker.
 Prefer stable thread roles when useful, such as setup, impl/<topic>, and verify/<topic>.
+You may dispatch multiple threads in one step with thread_batch, passing all of them as items. Items with no dependency on another item in the same batch run concurrently; an item that names another batch item as a source waits for it to finish and receives its episode. Only name another item in the same batch when you want that ordering. Do not create circular dependencies; the batch is rejected. This enables patterns like best-of-N: dispatch several independent explorations in one batch, then a synthesis item that takes all of them as sources.
+Batch only read-only threads or threads that touch different files. Concurrent workers share one working directory and can overwrite each other's work.
 Threads do not share full live context with each other. When you dispatch thread(name, action, threads?), the worker for name receives that thread's own retained history, and if you provide threads, it also receives the latest retained episode from each named source thread. The worker's final response becomes the next retained episode for name.
 Dispatch work so that important threads end by producing a high-signal retained episode that another thread can act on directly. Avoid dispatches that leave behind weak episodes and force later threads to rediscover setup state, verification state, or prior conclusions.
 Work one bounded unit at a time. Before declaring a task done, dispatch a fresh verification thread instead of relying only on the implementation thread's judgment.
@@ -27,6 +29,7 @@ Avoid creating extra Markdown documents or notes files unless the user explicitl
 
 Your tools:
 - thread(name, action, threads?)
+- thread_batch(items[])
 - threads()
 - thread_read(name)
 

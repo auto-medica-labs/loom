@@ -9,6 +9,7 @@ import argparse
 import asyncio
 import sys
 import uuid
+from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -21,7 +22,8 @@ from tau_agent.events import (
 from tau_agent.loop import run_agent_loop
 from tau_agent.messages import AssistantMessage, UserMessage
 from tau_agent.provider_events import TextDeltaEvent
-from tau_agent.tools import AgentTool
+from tau_agent.tools import AgentTool, AgentToolResult
+from tau_agent.types import JSONValue
 
 from loom.dispatch import error_text
 from loom.engine import build_engine
@@ -65,6 +67,40 @@ def _preview(text: str, limit: int = 220) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1] + "…"
 
 
+EPISODE_PREVIEW = 300
+
+
+def _episode_lines(result: AgentToolResult) -> list[str]:
+    """One line per episode, whichever tool produced them."""
+    details = result.details
+    episodes = details.get("episodes") if isinstance(details, dict) else None
+    if not isinstance(episodes, list):
+        return [f"<< {_preview(result.text, EPISODE_PREVIEW)}"]
+    lines = []
+    for episode in episodes:
+        if not isinstance(episode, Mapping):
+            continue
+        name = str(episode.get("name", "?"))
+        text = str(episode.get("text", ""))
+        marker = "!! " if text.startswith("Error:") else ""
+        lines.append(
+            f"<< {marker}{name} ({len(text):,} chars): {_preview(text, EPISODE_PREVIEW)}"
+        )
+    return lines
+
+
+def _dispatch_label(arguments: Mapping[str, JSONValue]) -> str:
+    items = arguments.get("items")
+    if isinstance(items, list):
+        names = [
+            str(item["name"])
+            for item in items
+            if isinstance(item, Mapping) and item.get("name")
+        ]
+        return "batch: " + ", ".join(names)
+    return f"thread {_preview(str(arguments.get('name', '')), 40)}"
+
+
 async def _run(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd).resolve()
     store = EpisodeStore(args.store or cwd / ".loom" / "episodes.jsonl")
@@ -98,9 +134,11 @@ async def _run(args: argparse.Namespace) -> None:
         session_id=uuid.uuid4().hex,
     ):
         if isinstance(event, ToolExecutionStartEvent):
-            print(f"\n>> thread {_preview(str(event.args.get('name', '')), 40)}")
+            print(f"\n>> {_dispatch_label(event.args)}")
         elif isinstance(event, ToolExecutionEndEvent):
-            print(f"<< {_preview(event.result.text, 400)}\n")
+            for line in _episode_lines(event.result):
+                print(line)
+            print()
         elif isinstance(event, MessageUpdateEvent) and isinstance(
             event.assistant_message_event, TextDeltaEvent
         ):
