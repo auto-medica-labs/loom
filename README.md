@@ -17,7 +17,7 @@ orchestrator (thread tools only)
 ## Install
 
 ```sh
-uv sync            # resolves tau-ai from ../tau (editable)
+uv sync
 ```
 
 ## Run
