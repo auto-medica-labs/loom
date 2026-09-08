@@ -30,6 +30,20 @@ DEFAULT_MAX_TURNS = 64
 WorkerListener = Callable[[str, AgentEvent], None]
 
 
+def error_text(message: AssistantMessage) -> str:
+    """Why a model turn produced nothing: provider error or diagnostic."""
+    if message.error_message:
+        return message.error_message
+    for diagnostic in message.diagnostics or ():
+        if diagnostic.error is not None and diagnostic.error.message:
+            return diagnostic.error.message
+        details = diagnostic.details or {}
+        body = details.get("body") or details.get("message") or ""
+        if body:
+            return f"{diagnostic.type}: {body}"
+    return ""
+
+
 async def run_dispatch(
     *,
     provider: ModelProvider,
@@ -65,9 +79,10 @@ async def run_dispatch(
     messages.append(UserMessage(content=action))
 
     final = ""
+    error = ""
 
     async def consume() -> None:
-        nonlocal final
+        nonlocal final, error
         async for event in run_agent_loop(
             provider=provider,
             model=model,
@@ -83,6 +98,9 @@ async def run_dispatch(
                 text = event.message.text.strip()
                 if text:
                     final = text
+                failure = error_text(event.message)
+                if failure:
+                    error = failure
 
     try:
         await asyncio.wait_for(consume(), timeout=timeout_secs)
@@ -95,7 +113,8 @@ async def run_dispatch(
 
     if not final:
         store.append(Episode(name, action, "", ERROR))
-        return f"Error: thread '{name}' produced no episode."
+        detail = f": {error}" if error else ""
+        return f"Error: thread '{name}' produced no episode{detail}"
 
     store.append(Episode(name, action, final, OK))
     return final

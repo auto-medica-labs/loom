@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sys
 import uuid
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from tau_agent.messages import AssistantMessage, UserMessage
 from tau_agent.provider_events import TextDeltaEvent
 from tau_agent.tools import AgentTool
 
+from loom.dispatch import error_text
 from loom.engine import build_engine
 from loom.episodes import EpisodeStore
 from loom.prompts import orchestrator_prompt
@@ -89,12 +91,12 @@ async def _run(args: argparse.Namespace) -> None:
             event.assistant_message_event, TextDeltaEvent
         ):
             print(event.assistant_message_event.delta, end="", flush=True)
-        elif (
-            isinstance(event, MessageEndEvent)
-            and isinstance(event.message, AssistantMessage)
-            and event.message.text.strip()
-        ):
-            print()
+        elif isinstance(event, MessageEndEvent) and isinstance(event.message, AssistantMessage):
+            if event.message.text.strip():
+                print()
+            failure = error_text(event.message)
+            if failure:
+                print(f"error: {failure}", file=sys.stderr)
 
     print(f"\nepisodes: {store.path}")
 
