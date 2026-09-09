@@ -1,7 +1,5 @@
-"""Loom-native coding tools. No Tau dependency.
-
-Same 4 tool names/schemas as Tau (`read`/`write`/`edit`/`bash`) so worker
-prompts keep working. Text-only, cwd-jailed, truncated.
+"""Worker coding tools: `read`/`write`/`edit`/`bash`.
+Text-only, cwd-jailed, truncated.
 """
 
 from __future__ import annotations

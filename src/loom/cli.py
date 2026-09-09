@@ -1,6 +1,6 @@
 """Print-mode orchestrator: `loom "refactor the parser"`.
 
-The orchestrator only holds thread tools; workers get Loom-native coding tools.
+The orchestrator only holds thread tools; workers get coding tools.
 """
 
 from __future__ import annotations

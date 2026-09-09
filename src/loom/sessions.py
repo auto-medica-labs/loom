@@ -36,8 +36,6 @@ class SessionStore:
     def __init__(self, path: str | Path) -> None:
         self.dir = Path(path)
         self.dir.mkdir(parents=True, exist_ok=True)
-        # ponytail: keep `.path` alias consistent with EpisodeStore.
-        self.path = self.dir
 
     def path_of(self, session_id: str) -> Path:
         return self.dir / f"{session_id}.jsonl"
@@ -101,18 +99,7 @@ def _render_record(record: object, store: EpisodeStore | None = None) -> str:
             episode = store.get(episode_id)
             if episode is not None:
                 return f"== {label} ==\n{episode.content}"
-        if episode_id:
-            return f"== {label} == [{episode_id}]"
-        # ponytail: legacy episode lines embed "== name ==" in text already.
-        return f"== {label} ==\n{text}" if label else text
+        return f"== {label} == [{episode_id}]" if episode_id else ""
     if kind == OUTPUT:
         return f">> {label}\n{text}" if label else text
-    # ponytail: legacy lines from before the {type, text} shape.
-    if kind == "session":
-        prompt = str(record.get("prompt", ""))
-        return f"## Input\n{prompt}" if prompt else ""
-    if kind == "dispatch":
-        return f">> {record.get('label', '?')}\n{text}"
-    if kind == "text":
-        return text
     return ""

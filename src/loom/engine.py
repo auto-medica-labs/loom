@@ -1,4 +1,4 @@
-"""Loom-native engine: provider/model resolve + worker tools. No Tau."""
+"""Provider/model resolve + worker tools."""
 
 from __future__ import annotations
 

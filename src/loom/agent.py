@@ -1,7 +1,5 @@
-"""Loom-native agent loop on any-llm. No Tau dependency.
-
-Minimal port of tau_agent/loop.py semantics, stripped to what Loom needs:
-sequential tool calls, OpenAI-dict messages, tiny event set for the CLI.
+"""Agent loop on any-llm: sequential tool calls, OpenAI-dict messages,
+tiny event set for the CLI.
 """
 
 from __future__ import annotations

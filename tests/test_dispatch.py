@@ -63,7 +63,7 @@ def use_script(patch_llm: FakeLLM, script: list[Any]) -> FakeLLM:
 
 
 def store(tmp_path: Path) -> EpisodeStore:
-    return EpisodeStore(tmp_path / "episodes.jsonl")
+    return EpisodeStore(tmp_path / "episodes")
 
 
 def user_text(messages: list[dict[str, Any]]) -> str:

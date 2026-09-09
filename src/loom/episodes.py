@@ -13,8 +13,6 @@ ERROR = "error"
 TIMED_OUT = "timed_out"
 CANCELLED = "cancelled"
 
-LEGACY_SUFFIXES = {".jsonl", ".json"}
-
 
 def _now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds")
@@ -45,34 +43,12 @@ class Episode:
 class EpisodeStore:
     """One file per episode in a directory (`<dir>/<id>.jsonl`).
 
-    Accepts a directory, or a legacy `episodes.jsonl` file path which is
-    migrated into the sibling `episodes/` directory on first use.
     Episodes are write-once, read-many, and only queried by thread name.
     """
 
     def __init__(self, path: str | Path) -> None:
-        given = Path(path)
-        if given.suffix in LEGACY_SUFFIXES:
-            self.dir = given.with_suffix("")
-            legacy = given
-        else:
-            self.dir = given
-            legacy = given.with_suffix(".jsonl") if given.suffix == "" else None
+        self.dir = Path(path)
         self.dir.mkdir(parents=True, exist_ok=True)
-        # ponytail: keep `.path` as an alias so CLI/tests keep working.
-        self.path = self.dir
-        if legacy is not None and legacy.is_file():
-            self._migrate_legacy(legacy)
-
-    def _migrate_legacy(self, legacy: Path) -> None:
-        for line in legacy.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                self.append(Episode(**json.loads(line)))
-            except (ValueError, TypeError):
-                continue
-        legacy.unlink()
 
     def append(self, episode: Episode) -> None:
         target = self.dir / f"{episode.id}.jsonl"
@@ -83,11 +59,7 @@ class EpisodeStore:
         target.write_text(json.dumps(asdict(episode)) + "\n", encoding="utf-8")
 
     def _files(self) -> list[Path]:
-        files = [
-            *self.dir.glob("*.jsonl"),
-            *self.dir.glob("*.json"),
-        ]
-        return sorted(files, key=lambda f: (f.stat().st_mtime_ns, f.name))
+        return sorted(self.dir.glob("*.jsonl"), key=lambda f: (f.stat().st_mtime_ns, f.name))
 
     def _load(self, *, ok_only: bool) -> list[Episode]:
         if not self.dir.exists():
