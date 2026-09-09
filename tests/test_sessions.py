@@ -7,7 +7,7 @@ from pathlib import Path
 from loom.sessions import SessionStore
 
 
-def test_episode_lines_are_references_resolved_at_render(tmp_path: Path) -> None:
+def test_episode_lines_are_references_resolved_in_messages(tmp_path: Path) -> None:
     import json
 
     from loom.episodes import Episode, EpisodeStore
@@ -29,17 +29,13 @@ def test_episode_lines_are_references_resolved_at_render(tmp_path: Path) -> None
     assert ref == {"type": "episode", "label": "research", "id": first.id, "tool_call_id": "call_1"}
     assert "text" not in ref
 
-    rendered = sessions.render(sid, episodes)
-    assert rendered is not None
-    assert "what is this repo?" in rendered
-    assert "Planning: dispatch research threads." in rendered
-    assert "== research ==\nfound README" in rendered
-    assert rendered.index("found README") < rendered.index("pyproject only")
+    replayed = sessions.messages(sid, episodes)
+    assert replayed is not None
+    assert {"role": "user", "content": "what is this repo?"} in replayed
+    assert {"role": "assistant", "content": "Planning: dispatch research threads."} in replayed
+    tools = [m for m in replayed if m.get("role") == "tool"]
+    assert [t["content"] for t in tools] == ["found README", "pyproject only"]
     assert sessions.ids() == [sid]
-
-
-def test_render_missing_session_returns_none(tmp_path: Path) -> None:
-    assert SessionStore(tmp_path / "sessions").render("nope") is None
 
 
 def test_skips_corrupt_lines(tmp_path: Path) -> None:
@@ -49,9 +45,9 @@ def test_skips_corrupt_lines(tmp_path: Path) -> None:
         handle.write("not json{\n")
     sessions.log_output(sid, "still here")
 
-    rendered = sessions.render(sid)
-    assert rendered is not None
-    assert "still here" in rendered
+    replayed = sessions.messages(sid)
+    assert replayed is not None
+    assert {"role": "assistant", "content": "still here"} in replayed
 
 
 def test_open_session_continues_single_existing(tmp_path: Path) -> None:
@@ -61,8 +57,9 @@ def test_open_session_continues_single_existing(tmp_path: Path) -> None:
     sid = sessions.start("original")
     assert _open_session(sessions, [sid], "follow-up") == sid
     assert sessions.ids() == [sid]
-    rendered = sessions.render(sid)
-    assert rendered is not None and "follow-up" in rendered
+    replayed = sessions.messages(sid)
+    assert replayed is not None
+    assert {"role": "user", "content": "follow-up"} in replayed
 
 
 def test_open_session_branches_otherwise(tmp_path: Path) -> None:
@@ -179,6 +176,42 @@ def test_messages_groups_batch_episodes_into_one_tool_message(tmp_path: Path) ->
         "name": "a",
         "content": "first\n\nsecond",
     }
+
+
+def test_messages_splits_episodes_with_different_call_ids(tmp_path: Path) -> None:
+    from loom.episodes import Episode, EpisodeStore
+    from loom.sessions import SessionStore
+
+    episodes = EpisodeStore(tmp_path / "episodes")
+    episodes.append(Episode("a", "look", "first"))
+    episodes.append(Episode("b", "look", "second"))
+    episodes.append(Episode("c", "look", "third"))
+    (first,) = episodes.read("a")
+    (second,) = episodes.read("b")
+    (third,) = episodes.read("c")
+
+    sessions = SessionStore(tmp_path / "sessions")
+    sid = sessions.start("explore")
+    sessions.log_assistant(
+        sid, "working", [{"id": "call_b", "name": "thread_batch", "arguments": {}}]
+    )
+    sessions.log_episode_ref(sid, "a", first.id, tool_call_id="call_b")
+    sessions.log_episode_ref(sid, "b", second.id, tool_call_id="call_b")
+    sessions.log_episode_ref(sid, "c", third.id, tool_call_id="call_c")
+    sessions.log_output(sid, "done")
+
+    replayed = sessions.messages(sid, episodes)
+    assert replayed is not None
+    tools = [m for m in replayed if m.get("role") == "tool"]
+    assert tools == [
+        {
+            "role": "tool",
+            "tool_call_id": "call_b",
+            "name": "a",
+            "content": "first\n\nsecond",
+        },
+        {"role": "tool", "tool_call_id": "call_c", "name": "c", "content": "third"},
+    ]
 
 
 def test_messages_trims_dangling_tool_turn(tmp_path: Path) -> None:

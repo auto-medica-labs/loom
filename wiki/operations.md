@@ -16,7 +16,7 @@
 - Each run appends to `<cwd>/.loom/sessions/<id>.jsonl`; each worker result appends to `<cwd>/.loom/episodes/<id>.jsonl`. Both dirs are gitignored (`.loom/`).
 - `--session <id>` once + existing file → appends the new prompt to that file and prepends its rendered transcript as context. `--resume` → same, using the latest session. Multiple `--session` ids (or an unknown id) → **new** session file with all found transcripts prepended; missing ids print `warning: session '<id>' not found` to stderr (`--resume` with no sessions prints `warning: no sessions found`).
 - CLI prints `session: <path>` at the end of every run.
-- Episode lines in sessions are id references; use `SessionStore.render(sid, episode_store)` to resolve content (see `src/loom/sessions.py`, `tests/test_sessions.py`).
+- Episode lines in sessions are id references; `SessionStore.messages(sid, episode_store)` resolves them into `role: tool` messages (see `src/loom/sessions.py`, `tests/test_sessions.py`).
 
 ## Threading patterns that work
 

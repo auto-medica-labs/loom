@@ -155,56 +155,8 @@ class SessionStore:
         with self.path_of(session_id).open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record) + "\n")
 
-    def render(self, session_id: str, store: EpisodeStore | None = None) -> str | None:
-        """Full transcript as one context block, or None if unknown id.
-
-        Pass the episode store to resolve episode references into content.
-        """
-        path = self.path_of(session_id)
-        if not path.exists():
-            return None
-        turns: list[str] = []
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            try:
-                record = json.loads(line)
-            except ValueError:
-                continue
-            turns.append(_render_record(record, store))
-        turns = [t for t in turns if t]
-        return "\n\n".join([f"=== Session {session_id} ===", *turns])
-
     def ids(self) -> list[str]:
         return sorted(p.stem for p in self.dir.glob("*.jsonl"))
-
-
-def _render_record(record: object, store: EpisodeStore | None = None) -> str:
-    if not isinstance(record, dict):
-        return ""
-    kind, text = record.get("type"), str(record.get("text", ""))
-    label = str(record.get("label", ""))
-    if kind == INPUT:
-        return f"## Input\n{text}"
-    if kind == EPISODE:
-        episode_id = str(record.get("id", ""))
-        if episode_id and store is not None:
-            episode = store.get(episode_id)
-            if episode is not None:
-                return f"== {label} ==\n{episode.content}"
-        return f"== {label} == [{episode_id}]" if episode_id else ""
-    if kind == OUTPUT:
-        return f">> {label}\n{text}" if label else text
-    if kind == ASSISTANT:
-        calls = record.get("tool_calls") or []
-        names = ", ".join(str(c.get("name", "?")) for c in calls if isinstance(c, dict))
-        if text and names:
-            return f"{text}\n[calls: {names}]"
-        return text or (f"[calls: {names}]" if names else "")
-    if kind == TOOL:
-        body = text or f"[{record.get('tool_call_id', '')}]"
-        return f"<< {label}\n{body}" if label else body
-    return ""
 
 
 def _episode_label(record: dict) -> str:
@@ -248,11 +200,6 @@ def _record_to_message(record: dict, store: EpisodeStore | None) -> dict[str, An
         if wire:
             message["tool_calls"] = wire
         return message
-    if kind == EPISODE:
-        # Unreachable via messages(): cid-carrying refs merge in the loop.
-        # A ref without tool_call_id cannot pair with an assistant turn —
-        # skip it (no legacy files).
-        return None
     if kind == TOOL:
         return {
             "role": "tool",
