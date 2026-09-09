@@ -68,6 +68,8 @@ class AgentError:
 
 Event = TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError
 
+MAX_CONSECUTIVE_ERRORS = 3
+
 
 def to_openai_tools(tools: Sequence[Tool]) -> list[dict[str, Any]]:
     return [
@@ -106,7 +108,8 @@ async def run_loop(
 
     `messages` uses OpenAI dict format. Mutated in place (assistant + tool
     turns appended) so callers can inspect history; the final assistant text
-    arrives as AssistantEnd per turn, AgentError on failure.
+    arrives as AssistantEnd per turn, AgentError after consecutive turn
+    errors (`MAX_CONSECUTIVE_ERRORS`) or max_turns.
     """
     from any_llm import AnyLLM  # lazy: keeps import cheap for tests
 
@@ -119,6 +122,7 @@ async def run_loop(
 
     history: list[Any] = [{"role": "system", "content": system}, *messages]
 
+    errors = 0
     for _ in range(max(1, max_turns)):
         try:
             result = await llm.acompletion(
@@ -126,13 +130,18 @@ async def run_loop(
                 messages=history,
                 tools=wire_tools,
             )
+            # ponytail: parse inside try — a malformed provider response is a
+            # retryable turn error, never a crash that skips episode storage.
+            msg = result.choices[0].message
+            text: str = msg.content or ""
+            raw_calls = getattr(msg, "tool_calls", None) or []
         except Exception as exc:
-            yield AgentError(message=str(exc))
-            return
-
-        msg = result.choices[0].message
-        text: str = msg.content or ""
-        raw_calls = getattr(msg, "tool_calls", None) or []
+            errors += 1
+            if errors >= MAX_CONSECUTIVE_ERRORS:
+                yield AgentError(message=str(exc))
+                return
+            continue
+        errors = 0
 
         if text:
             yield TextDelta(delta=text)

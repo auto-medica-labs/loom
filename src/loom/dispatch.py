@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from loom.agent import AgentError, AssistantEnd, Event, Tool, run_loop
+from loom.agent import (
+    AgentError,
+    AssistantEnd,
+    Event,
+    TextDelta,
+    Tool,
+    ToolEnd,
+    ToolStart,
+    run_loop,
+)
 from loom.episodes import (
     CANCELLED,
     ERROR,
@@ -24,6 +34,30 @@ DEFAULT_TIMEOUT_SECS = 1800.0
 DEFAULT_MAX_TURNS = 64
 
 WorkerListener = Callable[[str, Event], None]
+
+
+def _event_to_dict(event: Event) -> dict[str, Any]:
+    """Minute interaction as JSON-safe dicts for `<id>.trace.jsonl`."""
+    if isinstance(event, TextDelta):
+        return {"type": "text", "delta": event.delta}
+    if isinstance(event, ToolStart):
+        return {
+            "type": "tool_start",
+            "tool": event.tool_name,
+            "args": event.args,
+            "call_id": event.call_id,
+        }
+    if isinstance(event, ToolEnd):
+        return {
+            "type": "tool_end",
+            "tool": event.tool_name,
+            "text": event.result.text,
+            "is_error": event.is_error,
+            "call_id": event.call_id,
+        }
+    if isinstance(event, AssistantEnd):
+        return {"type": "assistant", "text": event.text, "tool_calls": event.tool_calls}
+    return {"type": "error", "message": event.message}
 
 
 async def run_dispatch(
@@ -48,13 +82,14 @@ async def run_dispatch(
     final response is stored as the next episode for `name` and returned.
     """
     system = worker_prompt(str(working_directory))
+    scope = session or None
 
     messages: list[dict[str, Any]] = []
-    own = store.read(name)
+    own = store.read(name, session=scope)
     if own:
         messages.append({"role": "user", "content": render_self_context(name, own)})
     for source in source_threads:
-        episode = store.latest(source)
+        episode = store.latest(source, session=scope)
         if episode is None:
             return f"Error: source thread '{source}' has no retained episode."
         messages.append({"role": "user", "content": render_source_context(episode)})
@@ -62,6 +97,13 @@ async def run_dispatch(
 
     final = ""
     error = ""
+    trace: list[dict[str, Any]] = []
+
+    def _store(episode: Episode) -> None:
+        store.append(episode)
+        # ponytail: trace write is best-effort debug detail, never blocks handoff.
+        with contextlib.suppress(OSError):
+            store.append_trace(episode.id, trace)
 
     async def consume() -> None:
         nonlocal final, error
@@ -75,6 +117,7 @@ async def run_dispatch(
         ):
             if on_event is not None:
                 on_event(name, event)
+            trace.append(_event_to_dict(event))
             if isinstance(event, AssistantEnd) and event.text.strip():
                 final = event.text.strip()
             elif isinstance(event, AgentError):
@@ -83,16 +126,16 @@ async def run_dispatch(
     try:
         await asyncio.wait_for(consume(), timeout=timeout_secs)
     except TimeoutError:
-        store.append(Episode(name, action, "", TIMED_OUT, session=session))
+        _store(Episode(name, action, "", TIMED_OUT, session=session))
         return f"Error: thread '{name}' timed out after {int(timeout_secs)}s."
     except asyncio.CancelledError:
-        store.append(Episode(name, action, "", CANCELLED, session=session))
+        _store(Episode(name, action, "", CANCELLED, session=session))
         raise
 
     if not final:
-        store.append(Episode(name, action, "", ERROR, session=session))
+        _store(Episode(name, action, "", ERROR, session=session))
         detail = f": {error}" if error else ""
         return f"Error: thread '{name}' produced no episode{detail}"
 
-    store.append(Episode(name, action, final, OK, session=session))
+    _store(Episode(name, action, final, OK, session=session))
     return final

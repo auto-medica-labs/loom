@@ -29,11 +29,13 @@ def _with_episodes(text: str, episodes: Sequence[tuple[str, str, str | None]]) -
     )
 
 
-def _stored_id(store: EpisodeStore, name: str, text: str) -> str | None:
+def _stored_id(
+    store: EpisodeStore, name: str, text: str, session: str | None = None
+) -> str | None:
     """Id of the episode just stored, or None for failed dispatches."""
     if text.startswith("Error:"):
         return None
-    latest = store.latest(name)
+    latest = store.latest(name, session=session)
     return latest.id if latest is not None and latest.content == text else None
 
 
@@ -146,7 +148,9 @@ def create_thread_tools(
             )
         finally:
             active.discard(name)
-        return _with_episodes(episode, [(name, episode, _stored_id(store, name, episode))])
+        return _with_episodes(
+            episode, [(name, episode, _stored_id(store, name, episode, session or None))]
+        )
 
     async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
         items = args.get("items")
@@ -229,23 +233,24 @@ def create_thread_tools(
 
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
         entries = [
-            (names[i], results[i], _stored_id(store, names[i], results[i]))
+            (names[i], results[i], _stored_id(store, names[i], results[i], session or None))
             for i in range(len(names))
         ]
         return _with_episodes(body, entries)
 
     async def list_threads(args: dict[str, Any]) -> ToolResult:
-        names = store.names()
+        scope = session or None
+        names = store.names(session=scope)
         if not names:
             return _result("No active threads in this session.")
-        lines = [f"- {name} | {store.count(name)} episodes" for name in names]
+        lines = [f"- {name} | {store.count(name, session=scope)} episodes" for name in names]
         return _result("Active threads:\n" + "\n".join(lines))
 
     async def read_thread(args: dict[str, Any]) -> ToolResult:
         name = _text(args, "name")
         if not name:
             return _result("Error: thread_read requires 'name'.")
-        return _result(render_thread_document(name, store.read(name)))
+        return _result(render_thread_document(name, store.read(name, session=session or None)))
 
     return [
         Tool(

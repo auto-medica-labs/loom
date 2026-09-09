@@ -34,6 +34,10 @@ class FakeLLM:
         async with self._lock:
             self.calls.append([dict(m) for m in messages])
             item = self._script.pop(0) if self._script else ""
+        if isinstance(item, BaseException):
+            raise item
+        if isinstance(item, dict) and item.get("empty_choices"):
+            return SimpleNamespace(choices=[])
         if isinstance(item, dict) and "tool_calls" in item:
             calls = [
                 SimpleNamespace(
@@ -388,3 +392,54 @@ def test_thread_tool_rejects_a_second_concurrent_dispatch(
         return second.text
 
     assert "already running" in asyncio.run(scenario())
+
+
+async def _collect_loop(patch_llm: FakeLLM) -> list:
+    from loom.agent import run_loop
+
+    return [
+        event
+        async for event in run_loop(
+            provider="fake", model=MODEL, system="sys", messages=[], tools=[]
+        )
+    ]
+
+
+def test_run_loop_retries_transient_failures_then_recovers(patch_llm: FakeLLM) -> None:
+    from loom.agent import AgentError, AssistantEnd
+
+    use_script(patch_llm, [RuntimeError("flake"), RuntimeError("flake"), "recovered"])
+    events = asyncio.run(_collect_loop(patch_llm))
+    assert not [e for e in events if isinstance(e, AgentError)]
+    assert [e.text for e in events if isinstance(e, AssistantEnd)] == ["recovered"]
+    assert len(patch_llm.calls) == 3
+
+
+def test_run_loop_gives_up_after_consecutive_errors(patch_llm: FakeLLM) -> None:
+    from loom.agent import AgentError
+
+    use_script(patch_llm, [RuntimeError("down")] * 5)
+    events = asyncio.run(_collect_loop(patch_llm))
+    assert any(isinstance(e, AgentError) for e in events)
+    assert len(patch_llm.calls) == 3
+
+
+def test_malformed_response_stores_error_episode_not_crash(
+    tmp_path: Path, patch_llm: FakeLLM
+) -> None:
+    use_script(patch_llm, [{"empty_choices": True}] * 5)
+    episodes = store(tmp_path)
+    answer = asyncio.run(
+        run_dispatch(
+            provider="fake",
+            model=MODEL,
+            worker_tools=[],
+            store=episodes,
+            name="impl",
+            action="build",
+        )
+    )
+    assert answer.startswith("Error: thread 'impl' produced no episode")
+    persisted = episodes.by_session("")
+    assert len(persisted) == 1 and persisted[0].status == "error"
+    assert episodes.read_trace(persisted[0].id) != []

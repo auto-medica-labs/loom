@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 OK = "ok"
@@ -66,8 +68,39 @@ class EpisodeStore:
         os.utime(target, ns=(ns, ns))
         self._last_ns = ns
 
+    def append_trace(self, episode_id: str, trace: Sequence[Mapping[str, Any]]) -> None:
+        """Full minute interaction for one episode, debug-only.
+
+        One JSON object per line in `<id>.trace.jsonl`. Never injected
+        into worker context; `read()`/`latest()` only use episode content.
+        """
+        if not trace:
+            return
+        target = self.dir / f"{episode_id}.trace.jsonl"
+        with target.open("w", encoding="utf-8") as handle:
+            for record in trace:
+                handle.write(json.dumps(dict(record)) + "\n")
+
+    def read_trace(self, episode_id: str) -> list[dict[str, Any]]:
+        """Minute interaction for one episode, empty when none was stored."""
+        target = self.dir / f"{episode_id}.trace.jsonl"
+        if not target.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for line in target.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
     def _files(self) -> list[Path]:
-        return sorted(self.dir.glob("*.jsonl"), key=lambda f: (f.stat().st_mtime_ns, f.name))
+        return sorted(
+            (f for f in self.dir.glob("*.jsonl") if not f.name.endswith(".trace.jsonl")),
+            key=lambda f: (f.stat().st_mtime_ns, f.name),
+        )
 
     def _load(self, *, ok_only: bool) -> list[Episode]:
         if not self.dir.exists():
@@ -83,23 +116,32 @@ class EpisodeStore:
             episodes.append(episode)
         return episodes
 
-    def read(self, thread: str) -> list[Episode]:
+    def read(self, thread: str, session: str | None = None) -> list[Episode]:
         """Retained handoffs for one thread. Failed dispatches are excluded: a
-        worker that died must never become context for the next one."""
-        return [e for e in self._load(ok_only=True) if e.thread == thread]
+        worker that died must never become context for the next one.
 
-    def latest(self, thread: str) -> Episode | None:
-        episodes = self.read(thread)
+        Session-scoped: `session=None` reads across sessions (back-compat /
+        tests); any string (including `""`) filters to that session only."""
+        return [
+            e
+            for e in self._load(ok_only=True)
+            if e.thread == thread and (session is None or e.session == session)
+        ]
+
+    def latest(self, thread: str, session: str | None = None) -> Episode | None:
+        episodes = self.read(thread, session=session)
         return episodes[-1] if episodes else None
 
-    def names(self) -> list[str]:
+    def names(self, session: str | None = None) -> list[str]:
         seen: dict[str, int] = {}
         for episode in self._load(ok_only=True):
+            if session is not None and episode.session != session:
+                continue
             seen[episode.thread] = seen.get(episode.thread, 0) + 1
         return sorted(seen)
 
-    def count(self, thread: str) -> int:
-        return len(self.read(thread))
+    def count(self, thread: str, session: str | None = None) -> int:
+        return len(self.read(thread, session=session))
 
     def get(self, episode_id: str) -> Episode | None:
         """One episode by id (the `<id>.jsonl` filename)."""
