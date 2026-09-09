@@ -100,7 +100,8 @@ def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
             return ToolResult(text=f"Error: file not found: {path}", is_error=True)
         async with _lock(path):
             content = path.read_text(encoding="utf-8")
-            for i, e in enumerate(edits):
+            for i, edit in enumerate(edits):
+                e: Any = edit
                 if not isinstance(e, dict):
                     return ToolResult(text=f"Error: edit {i} must be an object", is_error=True)
                 old, new = e.get("oldText"), e.get("newText")

@@ -17,7 +17,11 @@ build-backend = "hatchling.build"
 packages = ["src/loom"]
 
 [dependency-groups]
-dev = ["mypy>=1.10", "pytest>=8.0", "ruff>=0.5"]
+dev = [
+    "ty",
+    "pytest>=8.0",
+    "ruff>=0.5",
+]
 
 [tool.ruff]
 line-length = 100
@@ -30,10 +34,6 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 [tool.ruff.lint.per-file-ignores]
 # Prompt prose is wrapped by the model, not the formatter.
 "src/loom/prompts.py" = ["E501"]
-
-[tool.mypy]
-python_version = "3.12"
-packages = ["loom"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
