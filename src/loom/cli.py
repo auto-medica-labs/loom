@@ -13,10 +13,11 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from loom.agent import AgentError, TextDelta, Tool, ToolEnd, ToolStart, run_loop
+from loom.agent import AgentError, AssistantEnd, TextDelta, Tool, ToolEnd, ToolStart, run_loop
 from loom.engine import build_engine, credential_path, load_credentials, save_credentials
 from loom.episodes import EpisodeStore
 from loom.prompts import orchestrator_prompt
+from loom.sessions import SessionStore
 from loom.threads import create_thread_tools
 
 
@@ -41,6 +42,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Episode directory (default: <cwd>/.loom/episodes).",
     )
     parser.add_argument("--max-turns", type=int, default=32, help="Orchestrator turns.")
+    parser.add_argument(
+        "--resume",
+        action="append",
+        default=[],
+        metavar="SESSION_ID",
+        help="Resume a session (one ID appends in place; several start a new run).",
+    )
     parser.add_argument(
         "--version",
         action="version",
@@ -84,12 +92,52 @@ def _dispatch_label(arguments: Mapping[str, Any]) -> str:
     return f"thread {_preview(str(arguments.get('name', '')), 40)}"
 
 
+def _open_session(sessions: SessionStore, resume: list[str], prompt: str) -> str:
+    """One existing --resume id continues in place; otherwise start a new run."""
+    if len(resume) == 1 and sessions.path_of(resume[0]).exists():
+        sessions.log_input(resume[0], prompt)
+        return resume[0]
+    return sessions.start(prompt)
+
+
+def _episode_entries(result: Any) -> list[tuple[str, str, str | None]] | None:
+    """Per-episode (name, text, id) triples in dispatch order, or None."""
+    details = result.details
+    episodes = details.get("episodes") if isinstance(details, dict) else None
+    if not isinstance(episodes, list):
+        return None
+    entries = []
+    for episode in episodes:
+        if not isinstance(episode, Mapping):
+            continue
+        raw_id = episode.get("id")
+        entries.append(
+            (
+                str(episode.get("name", "?")),
+                str(episode.get("text", "")),
+                raw_id if isinstance(raw_id, str) else None,
+            )
+        )
+    return entries
+
+
 async def _run(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd).resolve()
     store = EpisodeStore(args.store or cwd / ".loom" / "episodes")
     provider, model, worker_tools = build_engine(
         provider_name=args.provider, model=args.model, cwd=cwd
     )
+    sessions = SessionStore(cwd / ".loom" / "sessions")
+
+    messages: list[dict[str, Any]] = []
+    for prior in args.resume:
+        rendered = sessions.render(prior, store)
+        if rendered is None:
+            print(f"warning: session '{prior}' not found", file=sys.stderr)
+        else:
+            messages.append({"role": "user", "content": rendered})
+    messages.append({"role": "user", "content": args.prompt})
+    session_id = _open_session(sessions, args.resume, args.prompt)
 
     def on_worker_event(name: str, event: object) -> None:
         if isinstance(event, ToolStart):
@@ -105,28 +153,43 @@ async def _run(args: argparse.Namespace) -> None:
         store=store,
         working_directory=cwd,
         on_event=on_worker_event,
+        session=session_id,
     )
 
+    pending_label = ""
     async for event in run_loop(
         provider=provider,
         model=model,
         system=orchestrator_prompt(str(cwd)),
-        messages=[{"role": "user", "content": args.prompt}],
+        messages=messages,
         tools=tools,
         max_turns=args.max_turns,
     ):
         if isinstance(event, ToolStart):
-            print(f"\n>> {_dispatch_label(event.args)}")
+            pending_label = _dispatch_label(event.args)
+            print(f"\n>> {pending_label}")
         elif isinstance(event, ToolEnd):
+            entries = _episode_entries(event.result)
+            if entries is None:
+                sessions.log_output(session_id, event.result.text, label=pending_label)
+            else:
+                for name, text, episode_id in entries:
+                    if episode_id:
+                        sessions.log_episode_ref(session_id, name, episode_id)
+                    else:
+                        sessions.log_output(session_id, text, label=name)
             for line in _episode_lines(event.result):
                 print(line)
             print()
+        elif isinstance(event, AssistantEnd):
+            if event.text.strip():
+                sessions.log_output(session_id, event.text.strip())
         elif isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
         elif isinstance(event, AgentError):
             print(f"error: {event.message}", file=sys.stderr)
 
-    print(f"\nepisodes: {store.path}")
+    print(f"\nsession: {sessions.path_of(session_id)}")
 
 
 def _redact(value: str) -> str:

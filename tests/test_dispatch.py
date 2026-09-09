@@ -89,6 +89,27 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: Fake
     assert [e.content for e in episodes.read("impl")] == ["wrote parser, tests pass"]
 
 
+def test_dispatch_stamps_the_session_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["done"])
+    episodes = store(tmp_path)
+
+    asyncio.run(
+        run_dispatch(
+            provider="fake",
+            model=MODEL,
+            worker_tools=[],
+            store=episodes,
+            name="impl",
+            action="build",
+            session="20260909-000000-abc123",
+        )
+    )
+
+    assert episodes.read("impl")[0].session == "20260909-000000-abc123"
+    assert [e.thread for e in episodes.by_session("20260909-000000-abc123")] == ["impl"]
+    assert episodes.by_session("other") == []
+
+
 def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["first pass", "second pass"])
     episodes = store(tmp_path)
@@ -305,6 +326,16 @@ def test_batch_rejects_duplicate_names_before_dispatching(
     ).text
     assert "Duplicate thread name 'a'" in text
     assert episodes.names() == []
+
+
+def test_thread_result_carries_the_stored_episode_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
+    use_script(patch_llm, ["a done"])
+    episodes = store(tmp_path)
+    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    thread = next(t for t in tools if t.name == "thread")
+    result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
+    stored = episodes.read("impl")[0]
+    assert _episodes(result)[0]["id"] == stored.id
 
 
 def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:

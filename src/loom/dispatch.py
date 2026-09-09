@@ -34,6 +34,7 @@ async def run_dispatch(
     store: EpisodeStore,
     name: str,
     action: str,
+    session: str = "",
     source_threads: Sequence[str] = (),
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
@@ -82,16 +83,16 @@ async def run_dispatch(
     try:
         await asyncio.wait_for(consume(), timeout=timeout_secs)
     except TimeoutError:
-        store.append(Episode(name, action, "", TIMED_OUT))
+        store.append(Episode(name, action, "", TIMED_OUT, session=session))
         return f"Error: thread '{name}' timed out after {int(timeout_secs)}s."
     except asyncio.CancelledError:
-        store.append(Episode(name, action, "", CANCELLED))
+        store.append(Episode(name, action, "", CANCELLED, session=session))
         raise
 
     if not final:
-        store.append(Episode(name, action, "", ERROR))
+        store.append(Episode(name, action, "", ERROR, session=session))
         detail = f": {error}" if error else ""
         return f"Error: thread '{name}' produced no episode{detail}"
 
-    store.append(Episode(name, action, final, OK))
+    store.append(Episode(name, action, final, OK, session=session))
     return final

@@ -16,12 +16,25 @@ def _result(text: str) -> ToolResult:
     return ToolResult(text=text, is_error=text.startswith("Error:"))
 
 
-def _with_episodes(text: str, episodes: Sequence[tuple[str, str]]) -> ToolResult:
+def _with_episodes(text: str, episodes: Sequence[tuple[str, str, str | None]]) -> ToolResult:
     return ToolResult(
         text=text,
         is_error=False,
-        details={"episodes": [{"name": name, "text": body} for name, body in episodes]},
+        details={
+            "episodes": [
+                {"name": name, "text": body, "id": episode_id}
+                for name, body, episode_id in episodes
+            ]
+        },
     )
+
+
+def _stored_id(store: EpisodeStore, name: str, text: str) -> str | None:
+    """Id of the episode just stored, or None for failed dispatches."""
+    if text.startswith("Error:"):
+        return None
+    latest = store.latest(name)
+    return latest.id if latest is not None and latest.content == text else None
 
 
 def _text(arguments: Mapping[Any, Any], key: str) -> str:
@@ -98,6 +111,7 @@ def create_thread_tools(
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
     on_event: WorkerListener | None = None,
+    session: str = "",
 ) -> list[Tool]:
     """Tools for an orchestrator that cannot touch files itself.
 
@@ -124,6 +138,7 @@ def create_thread_tools(
                 store=store,
                 name=name,
                 action=action,
+                session=session,
                 source_threads=_string_list(args, "threads"),
                 working_directory=working_directory,
                 timeout_secs=timeout,
@@ -131,7 +146,7 @@ def create_thread_tools(
             )
         finally:
             active.discard(name)
-        return _with_episodes(episode, [(name, episode)])
+        return _with_episodes(episode, [(name, episode, _stored_id(store, name, episode))])
 
     async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
         items = args.get("items")
@@ -191,6 +206,7 @@ def create_thread_tools(
                             store=store,
                             name=names[index],
                             action=actions[index],
+                            session=session,
                             source_threads=sources[index],
                             working_directory=working_directory,
                             timeout_secs=timeouts[index] or timeout_secs,
@@ -212,7 +228,11 @@ def create_thread_tools(
             active.difference_update(names)
 
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
-        return _with_episodes(body, [(names[i], results[i]) for i in range(len(names))])
+        entries = [
+            (names[i], results[i], _stored_id(store, names[i], results[i]))
+            for i in range(len(names))
+        ]
+        return _with_episodes(body, entries)
 
     async def list_threads(args: dict[str, Any]) -> ToolResult:
         names = store.names()

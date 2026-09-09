@@ -43,6 +43,8 @@ Precedence: flags > `LOOM_*` env (`LOOM_PROVIDER`, `LOOM_MODEL`,
 file > default.
 
 Episodes append to `<cwd>/.loom/episodes/<id>.jsonl` (one file per episode).
+Orchestrator transcripts append to `<cwd>/.loom/sessions/<session-id>.jsonl`;
+`uv run loom --resume <session-id> "follow-up"` appends to that same file.
 
 ## Layout
 
@@ -51,7 +53,8 @@ Episodes append to `<cwd>/.loom/episodes/<id>.jsonl` (one file per episode).
 | `loom/agent.py` | minimal loop on any-llm: `Tool`, `run_loop`, 5 events |
 | `loom/coding.py` | worker tools: read/write/edit/bash (cwd-jailed, truncated) |
 | `loom/engine.py` | provider/model resolve + worker toolset |
-| `loom/episodes.py` | `Episode` + append-only JSONL store + renderers |
+| `loom/episodes.py` | `Episode` + one-file-per-episode store + renderers |
+| `loom/sessions.py` | orchestrator transcript store (one file per run) |
 | `loom/dispatch.py` | one dispatch: build worker context, run, store episode |
 | `loom/threads.py` | the orchestrator's toolset (`thread`, `thread_batch`, `threads`, `thread_read`) |
 | `loom/prompts.py` | orchestrator / worker system prompts |

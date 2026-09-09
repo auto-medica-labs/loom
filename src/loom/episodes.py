@@ -39,6 +39,7 @@ class Episode:
     status: str = OK
     created_at: str = field(default_factory=_now)
     id: str = field(default_factory=_new_id)
+    session: str = ""
 
 
 class EpisodeStore:
@@ -120,15 +121,29 @@ class EpisodeStore:
     def count(self, thread: str) -> int:
         return len(self.read(thread))
 
+    def get(self, episode_id: str) -> Episode | None:
+        """One episode by id (the `<id>.jsonl` filename)."""
+        for episode in self._load(ok_only=False):
+            if episode.id == episode_id:
+                return episode
+        return None
+
+    def by_session(self, session_id: str) -> list[Episode]:
+        """Every episode one orchestrator run left behind, failures included."""
+        return [e for e in self._load(ok_only=False) if e.session == session_id]
+
+
+def _header(index: int, episode: Episode) -> str:
+    header = f"\n=== Episode {index} | {episode.created_at} | action: {episode.action}"
+    if episode.session:
+        header += f" | session: {episode.session}"
+    return header + f" ===\n{episode.content}"
+
 
 def render_self_context(thread: str, episodes: list[Episode]) -> str:
     """This thread's own history, injected as the worker's memory."""
     rendered = [f'Retained history for thread "{thread}":']
-    for index, episode in enumerate(episodes, start=1):
-        rendered.append(
-            f"\n=== Episode {index} | {episode.created_at} | action: {episode.action} ===\n"
-            f"{episode.content}"
-        )
+    rendered.extend(_header(index, episode) for index, episode in enumerate(episodes, start=1))
     return "\n".join(rendered)
 
 
@@ -144,8 +159,5 @@ def render_thread_document(thread: str, episodes: list[Episode]) -> str:
     if not episodes:
         return f'Thread "{thread}" has no retained episodes.'
     header = f'Thread "{thread}" retained episodes ({len(episodes)} total):'
-    body = [
-        f"\n=== Episode {i} | {e.created_at} | action: {e.action} ===\n{e.content}"
-        for i, e in enumerate(episodes, start=1)
-    ]
+    body = [_header(i, e) for i, e in enumerate(episodes, start=1)]
     return "\n".join([header, *body])
