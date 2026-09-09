@@ -1,8 +1,11 @@
 # Loom
 
-Thread-and-episode orchestration on its own minimal engine (any-llm providers).
-
-Orchestrator dispatches **threads**; each thread runs a bounded action in a worker context and returns an **episode**. Episodes are the only thing that crosses between threads.
+Loom (`loom-threads`) is a **thread-and-episode orchestration** agent harness on its own minimal
+agent engine over `any-llm` providers. An **orchestrator** LLM plans and decomposes work but is
+deliberately tool-restricted: it can only dispatch **threads**. Each thread runs one bounded action
+in a fresh worker context (file/bash tools, jailed to a working directory) and returns an
+**episode** — a compressed record of what was done. Episodes are the only data that crosses between
+threads; nothing else leaks into orchestrator or worker context.
 
 ```sh
 uv tool install loom-threads
