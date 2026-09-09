@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -42,6 +42,7 @@ class TextDelta:
 class ToolStart:
     tool_name: str
     args: dict[str, Any]
+    call_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,11 +50,15 @@ class ToolEnd:
     tool_name: str
     result: ToolResult
     is_error: bool
+    call_id: str = ""
 
 
 @dataclass(frozen=True, slots=True)
 class AssistantEnd:
     text: str
+    # Native tool calls for this turn: [{id, name, arguments}]. Empty when the
+    # turn is plain text, so resume can replay the exact assistant turn.
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,14 +171,19 @@ async def run_loop(
                 ),
             }
         )
-        yield AssistantEnd(text=text)
+        yield AssistantEnd(
+            text=text,
+            tool_calls=[
+                {"id": cid, "name": name, "arguments": args} for cid, name, args in calls
+            ],
+        )
 
         if not calls:
             return
 
         for cid, name, args in calls:
             tool = by_name.get(name)
-            yield ToolStart(tool_name=name, args=args)
+            yield ToolStart(tool_name=name, args=args, call_id=cid)
             if tool is None:
                 result_ = ToolResult(text=f"Error: tool {name} not found", is_error=True)
             else:
@@ -186,7 +196,7 @@ async def run_loop(
                     "content": result_.text,
                 }
             )
-            yield ToolEnd(tool_name=name, result=result_, is_error=result_.is_error)
+            yield ToolEnd(tool_name=name, result=result_, is_error=result_.is_error, call_id=cid)
 
     yield AgentError(message=f"Agent stopped after max_turns={max_turns}")
 

@@ -145,11 +145,11 @@ async def _run(args: argparse.Namespace) -> None:
         else:
             prior_ids.insert(0, ids[-1])
     for prior in prior_ids:
-        rendered = sessions.render(prior, store)
-        if rendered is None:
+        prior_messages = sessions.messages(prior, store)
+        if prior_messages is None:
             print(f"warning: session '{prior}' not found", file=sys.stderr)
         else:
-            messages.append({"role": "user", "content": rendered})
+            messages.extend(prior_messages)
     messages.append({"role": "user", "content": args.prompt})
     session_id = _open_session(sessions, prior_ids, args.prompt)
 
@@ -185,18 +185,22 @@ async def _run(args: argparse.Namespace) -> None:
         elif isinstance(event, ToolEnd):
             entries = _episode_entries(event.result)
             if entries is None:
-                sessions.log_output(session_id, event.result.text, label=pending_label)
+                sessions.log_tool(session_id, pending_label, event.result.text, event.call_id)
             else:
                 for name, text, episode_id in entries:
                     if episode_id:
-                        sessions.log_episode_ref(session_id, name, episode_id)
+                        sessions.log_episode_ref(
+                            session_id, name, episode_id, tool_call_id=event.call_id
+                        )
                     else:
-                        sessions.log_output(session_id, text, label=name)
+                        sessions.log_tool(session_id, name, text, event.call_id)
             for line in _episode_lines(event.result):
                 print(line)
             print()
         elif isinstance(event, AssistantEnd):
-            if event.text.strip():
+            if event.tool_calls:
+                sessions.log_assistant(session_id, event.text.strip(), event.tool_calls)
+            elif event.text.strip():
                 sessions.log_output(session_id, event.text.strip())
         elif isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)

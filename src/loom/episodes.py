@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -49,6 +51,7 @@ class EpisodeStore:
     def __init__(self, path: str | Path) -> None:
         self.dir = Path(path)
         self.dir.mkdir(parents=True, exist_ok=True)
+        self._last_ns = 0
 
     def append(self, episode: Episode) -> None:
         target = self.dir / f"{episode.id}.jsonl"
@@ -57,6 +60,11 @@ class EpisodeStore:
             target = self.dir / f"{episode.id}-{counter}.jsonl"
             counter += 1
         target.write_text(json.dumps(asdict(episode)) + "\n", encoding="utf-8")
+        # Ordering is (mtime_ns, name) and fast appends can share a tick,
+        # leaving ties to random names — force monotonic mtimes.
+        ns = max(time.time_ns(), self._last_ns + 1)
+        os.utime(target, ns=(ns, ns))
+        self._last_ns = ns
 
     def _files(self) -> list[Path]:
         return sorted(self.dir.glob("*.jsonl"), key=lambda f: (f.stat().st_mtime_ns, f.name))
