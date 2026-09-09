@@ -38,7 +38,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--store",
         default=None,
-        help="Episode file (default: <cwd>/.loom/episodes.jsonl).",
+        help="Episode directory (default: <cwd>/.loom/episodes).",
     )
     parser.add_argument("--max-turns", type=int, default=32, help="Orchestrator turns.")
     parser.add_argument(
@@ -86,7 +86,7 @@ def _dispatch_label(arguments: Mapping[str, Any]) -> str:
 
 async def _run(args: argparse.Namespace) -> None:
     cwd = Path(args.cwd).resolve()
-    store = EpisodeStore(args.store or cwd / ".loom" / "episodes.jsonl")
+    store = EpisodeStore(args.store or cwd / ".loom" / "episodes")
     provider, model, worker_tools = build_engine(
         provider_name=args.provider, model=args.model, cwd=cwd
     )

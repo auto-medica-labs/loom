@@ -6,15 +6,22 @@ import json
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 OK = "ok"
 ERROR = "error"
 TIMED_OUT = "timed_out"
 CANCELLED = "cancelled"
 
+LEGACY_SUFFIXES = {".jsonl", ".json"}
+
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
+    return datetime.now(UTC).isoformat(timespec="milliseconds")
+
+
+def _new_id() -> str:
+    return uuid4().hex[:12]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,6 +30,7 @@ class Episode:
 
     `content` is the worker's final response, verbatim. `status` is `ok` for a
     handoff; anything else records a dispatch that died before answering.
+    `id` names the file (`<id>.jsonl`) inside the episode directory.
     """
 
     thread: str
@@ -30,31 +38,65 @@ class Episode:
     content: str
     status: str = OK
     created_at: str = field(default_factory=_now)
+    id: str = field(default_factory=_new_id)
 
 
 class EpisodeStore:
-    """Append-only JSONL store for one session's threads.
+    """One file per episode in a directory (`<dir>/<id>.jsonl`).
 
-    Flat file on purpose: episodes are write-once, read-many, and never
-    queried except by thread name.
+    Accepts a directory, or a legacy `episodes.jsonl` file path which is
+    migrated into the sibling `episodes/` directory on first use.
+    Episodes are write-once, read-many, and only queried by thread name.
     """
 
     def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        given = Path(path)
+        if given.suffix in LEGACY_SUFFIXES:
+            self.dir = given.with_suffix("")
+            legacy = given
+        else:
+            self.dir = given
+            legacy = given.with_suffix(".jsonl") if given.suffix == "" else None
+        self.dir.mkdir(parents=True, exist_ok=True)
+        # ponytail: keep `.path` as an alias so CLI/tests keep working.
+        self.path = self.dir
+        if legacy is not None and legacy.is_file():
+            self._migrate_legacy(legacy)
 
-    def append(self, episode: Episode) -> None:
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(episode)) + "\n")
-
-    def _load(self, *, ok_only: bool) -> list[Episode]:
-        if not self.path.exists():
-            return []
-        episodes: list[Episode] = []
-        for line in self.path.read_text(encoding="utf-8").splitlines():
+    def _migrate_legacy(self, legacy: Path) -> None:
+        for line in legacy.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            episode = Episode(**json.loads(line))
+            try:
+                self.append(Episode(**json.loads(line)))
+            except (ValueError, TypeError):
+                continue
+        legacy.unlink()
+
+    def append(self, episode: Episode) -> None:
+        target = self.dir / f"{episode.id}.jsonl"
+        counter = 1
+        while target.exists():
+            target = self.dir / f"{episode.id}-{counter}.jsonl"
+            counter += 1
+        target.write_text(json.dumps(asdict(episode)) + "\n", encoding="utf-8")
+
+    def _files(self) -> list[Path]:
+        files = [
+            *self.dir.glob("*.jsonl"),
+            *self.dir.glob("*.json"),
+        ]
+        return sorted(files, key=lambda f: (f.stat().st_mtime_ns, f.name))
+
+    def _load(self, *, ok_only: bool) -> list[Episode]:
+        if not self.dir.exists():
+            return []
+        episodes: list[Episode] = []
+        for file in self._files():
+            try:
+                episode = Episode(**json.loads(file.read_text(encoding="utf-8")))
+            except (ValueError, TypeError, OSError):
+                continue
             if ok_only and episode.status != OK:
                 continue
             episodes.append(episode)

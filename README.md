@@ -42,7 +42,7 @@ Precedence: flags > `LOOM_*` env (`LOOM_PROVIDER`, `LOOM_MODEL`,
 `LOOM_LLM_PROVIDER_API_KEY`, `LOOM_LLM_PROVIDER_BASE_URL`) > credential
 file > default.
 
-Episodes append to `<cwd>/.loom/episodes.jsonl`.
+Episodes append to `<cwd>/.loom/episodes/<id>.jsonl` (one file per episode).
 
 ## Layout
 
