@@ -1,5 +1,5 @@
 [project]
-name = "loom"
+name = "loom-threads"
 version = "0.1.0"
 description = "Thread-and-episode orchestration on its own any-llm engine."
 readme = "README.md"

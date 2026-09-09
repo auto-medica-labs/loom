@@ -22,10 +22,12 @@ from loom.threads import create_thread_tools
 
 
 def _get_version() -> str:
-    try:
-        return f"loom {version('loom')}"
-    except PackageNotFoundError:
-        return "loom unknown"
+    for dist in ("loom-threads", "loom"):
+        try:
+            return f"loom {version(dist)}"
+        except PackageNotFoundError:
+            continue
+    return "loom unknown"
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

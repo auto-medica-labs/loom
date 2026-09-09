@@ -264,7 +264,7 @@ wheels = [
 ]
 
 [[package]]
-name = "loom"
+name = "loom-threads"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
