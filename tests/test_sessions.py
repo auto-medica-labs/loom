@@ -79,12 +79,18 @@ def test_open_session_branches_otherwise(tmp_path: Path) -> None:
 def test_resume_keeps_the_prompt(tmp_path: Path) -> None:
     from loom.cli import _parse_args
 
-    args = _parse_args(["--resume", "20260909-024251-20ffb6", "write a summarize.md"])
-    assert args.resume == ["20260909-024251-20ffb6"]
+    args = _parse_args(["--session", "20260909-024251-20ffb6", "write a summarize.md"])
+    assert args.session == ["20260909-024251-20ffb6"]
+    assert args.resume is False
     assert args.prompt == "write a summarize.md"
 
-    args = _parse_args(["--resume", "a", "--resume", "b", "do X"])
-    assert args.resume == ["a", "b"]
+    args = _parse_args(["--session", "a", "--session", "b", "do X"])
+    assert args.session == ["a", "b"]
+    assert args.prompt == "do X"
+
+    args = _parse_args(["--resume", "do X"])
+    assert args.resume is True
+    assert args.session == []
     assert args.prompt == "do X"
 
 

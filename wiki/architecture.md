@@ -5,7 +5,7 @@ Why this shape exists: a single long-lived agent accumulates noisy context and l
 Execution flow for one `uv run loom "..."` (`src/loom/cli.py:_run`):
 
 1. `build_engine()` resolves provider/model/worker tools (`src/loom/engine.py`).
-2. `SessionStore.start()` opens `<cwd>/.loom/sessions/<stamp-rand>.jsonl`; `--resume` ids render into the first messages.
+2. `SessionStore.start()` opens `<cwd>/.loom/sessions/<stamp-rand>.jsonl`; `--session` ids and `--resume` render into the first messages.
 3. `create_thread_tools(...)` builds the orchestrator's 4 tools.
 4. `run_loop(...)` with `orchestrator_prompt` runs until no more tool calls or `max_turns=32`.
 5. Each tool result's per-episode `(name, text, id)` triples are logged as `episode` references in the session; plain text as `output`.
@@ -69,7 +69,7 @@ Renderers: `render_self_context` (numbered `=== Episode N | ... ===` history), `
 
 Orchestrator-side transcript; episodes keep worker results, sessions keep the orchestrator's side. One `<id>.jsonl` per run in `<cwd>/.loom/sessions/`, one `{type, ...}` line per turn:
 
-- `{"type":"input","text"}` — prompt (incl. each `--resume` follow-up)
+- `{"type":"input","text"}` — prompt (incl. each `--session` / `--resume` follow-up)
 - `{"type":"output","text","label"?}` — orchestrator text (`label` = dispatch label for tool outputs)
 - `{"type":"episode","label","id"}` — **reference only**, no content (`render(sid, store)` resolves ids to `== <label> ==\n<content>`)
 

@@ -45,11 +45,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-turns", type=int, default=32, help="Orchestrator turns.")
     parser.add_argument(
-        "--resume",
+        "--session",
         action="append",
         default=[],
         metavar="SESSION_ID",
         help="Resume a session (one ID appends in place; several start a new run).",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue the latest session in place.",
     )
     parser.add_argument(
         "--version",
@@ -95,7 +100,7 @@ def _dispatch_label(arguments: Mapping[str, Any]) -> str:
 
 
 def _open_session(sessions: SessionStore, resume: list[str], prompt: str) -> str:
-    """One existing --resume id continues in place; otherwise start a new run."""
+    """One existing --session id continues in place; otherwise start a new run."""
     if len(resume) == 1 and sessions.path_of(resume[0]).exists():
         sessions.log_input(resume[0], prompt)
         return resume[0]
@@ -132,14 +137,21 @@ async def _run(args: argparse.Namespace) -> None:
     sessions = SessionStore(cwd / ".loom" / "sessions")
 
     messages: list[dict[str, Any]] = []
-    for prior in args.resume:
+    prior_ids = list(args.session)
+    if args.resume:
+        ids = sessions.ids()
+        if not ids:
+            print("warning: no sessions found", file=sys.stderr)
+        else:
+            prior_ids.insert(0, ids[-1])
+    for prior in prior_ids:
         rendered = sessions.render(prior, store)
         if rendered is None:
             print(f"warning: session '{prior}' not found", file=sys.stderr)
         else:
             messages.append({"role": "user", "content": rendered})
     messages.append({"role": "user", "content": args.prompt})
-    session_id = _open_session(sessions, args.resume, args.prompt)
+    session_id = _open_session(sessions, prior_ids, args.prompt)
 
     def on_worker_event(name: str, event: object) -> None:
         if isinstance(event, ToolStart):

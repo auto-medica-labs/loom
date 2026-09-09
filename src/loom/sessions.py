@@ -10,8 +10,8 @@ file per run in `<cwd>/.loom/sessions/`, one line per turn in order:
 Episode lines are references: content lives once in the episode store
 (`render(..., store)` resolves them). `text` stays pure user/LLM content.
 
-`--resume <id>` prepends the rendered transcript as context and appends the
-new run to the same file.
+`--session <id>` prepends the rendered transcript as context and appends the
+new run to the same file (`--resume` continues the latest session).
 """
 
 from __future__ import annotations

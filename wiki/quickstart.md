@@ -29,7 +29,8 @@ Useful flags (`src/loom/cli.py:_parse_args`):
 | `--cwd` | `.` | working directory workers are jailed to |
 | `--store` | `<cwd>/.loom/episodes` | episode directory |
 | `--max-turns` | `32` | orchestrator loop turns (workers get 64) |
-| `--resume <id>` | — | one id continues that session file; several ids start a new run with all rendered as context |
+| `--session <id>` | — | one id continues that session file; several ids start a new run with all rendered as context |
+| `--resume` | — | continue the latest session file in place |
 | `setup` | — | `uv run loom setup` — interactive provider config (not a flag, a subcommand) |
 
 ## Provider setup
@@ -63,7 +64,7 @@ Precedence (flags > env > credential file > default) — see [operations](operat
 | `<cwd>/.loom/episodes/<id>.jsonl` | one file per episode |
 | `<cwd>/.loom/sessions/<session-id>.jsonl` | one file per orchestrator run |
 
-`.loom/` is gitignored. `uv run loom --resume <session-id> "follow-up"` appends to the same session file.
+`.loom/` is gitignored. `uv run loom --resume "follow-up"` appends to the latest session file; `uv run loom --session <session-id> "follow-up"` targets one explicitly.
 
 ## Next
 
