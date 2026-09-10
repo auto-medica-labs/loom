@@ -5,9 +5,9 @@
 `build_engine(provider_name, model, cwd)` in `src/loom/engine.py`. Credential file values are applied via `os.environ.setdefault` — **a file never overwrites the process env** (asserted in `tests/test_config.py`).
 
 1. CLI flags `--provider` / `--model`
-2. Env `LOOM_PROVIDER`, `LOOM_MODEL`, `LOOM_LLM_PROVIDER_API_KEY`, `LOOM_LLM_PROVIDER_BASE_URL`
-3. `~/.loom/credential.json` (`LOOM_CREDENTIAL_FILE` overrides the path in tests), keys `base_url / api_key / model / provider`
-4. Default: provider `None` (any-llm default), model `openai:gpt-5.4`
+1. Env `LOOM_PROVIDER`, `LOOM_MODEL`, `LOOM_LLM_PROVIDER_API_KEY`, `LOOM_LLM_PROVIDER_BASE_URL`
+1. `~/.loom/credential.json` (`LOOM_CREDENTIAL_FILE` overrides the path in tests), keys `base_url / api_key / model / provider`
+1. Default: provider `None` (any-llm default), model `openai:gpt-5.4`
 
 `loom setup` writes the file as plain JSON, mode 600, creating parents; corrupt/missing file reads as `{}`. `split_model` (`src/loom/agent.py`) accepts `provider:model` or a plain id.
 
@@ -40,14 +40,14 @@ uv run ty check   # `ty` is the type checker
 
 ## Where to change code
 
-| want | touch | watch for |
-| --- | --- | --- |
-| new worker capability | `src/loom/coding.py:create_coding_tools` + `src/loom/engine.py:build_engine` | keep cwd jail; `edit` exact-once matching; truncation limits |
-| new orchestrator tool | `src/loom/threads.py:create_thread_tools` + prompt tool list in `src/loom/prompts.py` | `details.episodes` shape `cli.py:_episode_entries` parses |
-| loop semantics | `src/loom/agent.py:run_loop` | sequential calls; `messages` mutated in place; lazy `any_llm` import |
-| context shaping | `src/loom/dispatch.py:run_dispatch`, renderers in `src/loom/episodes.py` | ok-only filtering; latest-only sources |
-| CLI/output | `src/loom/cli.py` | `_preview` truncation, `<< name (N chars)` lines, `session:` footer |
-| provider/config | `src/loom/engine.py` | setdefault ordering; `LOOM_CREDENTIAL_FILE` override |
+| want                  | touch                                                                                 | watch for                                                            |
+| --------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| new worker capability | `src/loom/coding.py:create_coding_tools` + `src/loom/engine.py:build_engine`          | keep cwd jail; `edit` exact-once matching; truncation limits         |
+| new orchestrator tool | `src/loom/threads.py:create_thread_tools` + prompt tool list in `src/loom/prompts.py` | `details.episodes` shape `cli.py:_episode_entries` parses            |
+| loop semantics        | `src/loom/agent.py:run_loop`                                                          | sequential calls; `messages` mutated in place; lazy `any_llm` import |
+| context shaping       | `src/loom/dispatch.py:run_dispatch`, renderers in `src/loom/episodes.py`              | ok-only filtering; latest-only sources                               |
+| CLI/output            | `src/loom/cli.py`                                                                     | `_preview` truncation, `<< name (N chars)` lines, `session:` footer  |
+| provider/config       | `src/loom/engine.py`                                                                  | setdefault ordering; `LOOM_CREDENTIAL_FILE` override                 |
 
 ## Not implemented
 

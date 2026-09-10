@@ -5,10 +5,10 @@ Why this shape exists: a single long-lived agent accumulates noisy context and l
 Execution flow for one `uv run loom "..."` (`src/loom/cli.py:_run`):
 
 1. `build_engine()` resolves provider/model/worker tools (`src/loom/engine.py`).
-2. `SessionStore.start()` opens `<cwd>/.loom/sessions/<stamp-rand>.jsonl`; `--session` ids and `--resume` render into the first messages.
-3. `create_thread_tools(...)` builds the orchestrator's 4 tools.
-4. `run_loop(...)` with `orchestrator_prompt` runs until no more tool calls or `max_turns=32`.
-5. Each tool result's per-episode `(name, text, id)` triples are logged as `episode` references in the session; plain text as `output`.
+1. `SessionStore.start()` opens `<cwd>/.loom/sessions/<stamp-rand>.jsonl`; `--session` ids and `--resume` render into the first messages.
+1. `create_thread_tools(...)` builds the orchestrator's 4 tools.
+1. `run_loop(...)` with `orchestrator_prompt` runs until no more tool calls or `max_turns=32`.
+1. Each tool result's per-episode `(name, text, id)` triples are logged as `episode` references in the session; plain text as `output`.
 
 ## Agent loop — `src/loom/agent.py`
 
@@ -36,9 +36,9 @@ ReAct loop on any-llm. Key facts:
 `run_dispatch(provider, model, worker_tools, store, name, action, session, source_threads, working_directory, timeout_secs=1800, max_turns=64, on_event)`:
 
 1. Builds worker messages: thread's **own past as proper `user` (action) / `assistant` (episode) turns** (`own_history_messages`, full history, verbatim) + **latest episode of each named source** as orchestrator input (`source_message`, latest only) + the action. Missing source → immediate `Error: source thread '...' has no retained episode.` with nothing stored.
-2. Runs `run_loop` with `worker_prompt` via `asyncio.wait_for(consume(), timeout)`. Last non-empty `AssistantEnd` wins as `final`.
-3. Stores one `Episode(name, action, final, status, session)`: `ok` on success; `timed_out` / `cancelled` / `error` (empty final) otherwise — and returns the text or an `Error: ...` string. Timeout message: `Error: thread '<name>' timed out after <N>s.`
-4. `on_event(name, event)` mirrors worker `ToolStart/ToolEnd` lines to the CLI (`    [<name>] ...`).
+1. Runs `run_loop` with `worker_prompt` via `asyncio.wait_for(consume(), timeout)`. Last non-empty `AssistantEnd` wins as `final`.
+1. Stores one `Episode(name, action, final, status, session)`: `ok` on success; `timed_out` / `cancelled` / `error` (empty final) otherwise — and returns the text or an `Error: ...` string. Timeout message: `Error: thread '<name>' timed out after <N>s.`
+1. `on_event(name, event)` mirrors worker `ToolStart/ToolEnd` lines to the CLI (`    [<name>] ...`).
 
 Failure episodes are stored but **excluded from future context** (`EpisodeStore.read` filters `ok_only=True`).
 
@@ -46,12 +46,12 @@ Failure episodes are stored but **excluded from future context** (`EpisodeStore.
 
 `create_thread_tools(provider, model, worker_tools, store, working_directory, timeout_secs, on_event, session)` returns:
 
-| tool | behavior |
-| --- | --- |
-| `thread(name, action, threads?, timeout?)` | one `run_dispatch`; needs `name` + `action`; rejects a second concurrent dispatch of the same name (`already running`) |
-| `thread_batch(items[])` | waves of concurrent `run_dispatch` via `asyncio.gather`; dependent items wait for in-batch sources and receive their episodes |
-| `threads()` | `Active threads:\n- <name> \| <n> episodes` or `No active threads in this session.` |
-| `thread_read(name)` | full retained history via `render_thread_document` |
+| tool                                       | behavior                                                                                                                      |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
+| `thread(name, action, threads?, timeout?)` | one `run_dispatch`; needs `name` + `action`; rejects a second concurrent dispatch of the same name (`already running`)        |
+| `thread_batch(items[])`                    | waves of concurrent `run_dispatch` via `asyncio.gather`; dependent items wait for in-batch sources and receive their episodes |
+| `threads()`                                | `Active threads:\n- <name> \| <n> episodes` or `No active threads in this session.`                                           |
+| `thread_read(name)`                        | full retained history via `render_thread_document`                                                                            |
 
 `thread`/`thread_batch` results carry `details.episodes = [{name, text, id}]` so `cli.py` can log episode references per dispatch in order. Failed dispatches get `id=None`.
 

@@ -22,16 +22,16 @@ Requirements: Python >=3.12, `any-llm-sdk` + `rich` (see `pyproject.toml`). Entr
 
 Useful flags (`src/loom/cli.py:_parse_args`):
 
-| flag | default | meaning |
-| --- | --- | --- |
-| `--provider` | credential/env | any-llm provider name |
-| `--model` | `openai:gpt-5.4` | `provider:model` or plain id |
-| `--cwd` | `.` | working directory workers are jailed to |
-| `--store` | `<cwd>/.loom/episodes` | episode directory |
-| `--max-turns` | `32` | orchestrator loop turns (workers get 64) |
-| `--session <id>` | — | one id continues that session file; several ids start a new run with all rendered as context |
-| `--resume` | — | continue the latest session file in place |
-| `setup` | — | `uv run loom setup` — interactive provider config (not a flag, a subcommand) |
+| flag             | default                | meaning                                                                                      |
+| ---------------- | ---------------------- | -------------------------------------------------------------------------------------------- |
+| `--provider`     | credential/env         | any-llm provider name                                                                        |
+| `--model`        | `openai:gpt-5.4`       | `provider:model` or plain id                                                                 |
+| `--cwd`          | `.`                    | working directory workers are jailed to                                                      |
+| `--store`        | `<cwd>/.loom/episodes` | episode directory                                                                            |
+| `--max-turns`    | `32`                   | orchestrator loop turns (workers get 64)                                                     |
+| `--session <id>` | —                      | one id continues that session file; several ids start a new run with all rendered as context |
+| `--resume`       | —                      | continue the latest session file in place                                                    |
+| `setup`          | —                      | `uv run loom setup` — interactive provider config (not a flag, a subcommand)                 |
 
 ## Provider setup
 
@@ -50,19 +50,19 @@ Precedence (flags > env > credential file > default) — see [operations](operat
 
 ## Where things live
 
-| path | what |
-| --- | --- |
-| `src/loom/agent.py` | minimal any-llm loop: `Tool`, `run_loop`, 5 events |
-| `src/loom/coding.py` | worker tools: read/write/edit/bash (cwd-jailed) |
-| `src/loom/engine.py` | provider/model resolve + worker toolset |
-| `src/loom/episodes.py` | `Episode` + one-file-per-episode store |
-| `src/loom/sessions.py` | orchestrator transcript store (one file per run) |
-| `src/loom/dispatch.py` | one dispatch: build worker context, run, store episode |
-| `src/loom/threads.py` | orchestrator toolset: `thread`, `thread_batch`, `threads`, `thread_read` |
-| `src/loom/prompts.py` | orchestrator / worker system prompts |
-| `src/loom/cli.py` | print-mode orchestrator loop + `setup` |
-| `<cwd>/.loom/episodes/<id>.jsonl` | one file per episode |
-| `<cwd>/.loom/sessions/<session-id>.jsonl` | one file per orchestrator run |
+| path                                      | what                                                                     |
+| ----------------------------------------- | ------------------------------------------------------------------------ |
+| `src/loom/agent.py`                       | minimal any-llm loop: `Tool`, `run_loop`, 5 events                       |
+| `src/loom/coding.py`                      | worker tools: read/write/edit/bash (cwd-jailed)                          |
+| `src/loom/engine.py`                      | provider/model resolve + worker toolset                                  |
+| `src/loom/episodes.py`                    | `Episode` + one-file-per-episode store                                   |
+| `src/loom/sessions.py`                    | orchestrator transcript store (one file per run)                         |
+| `src/loom/dispatch.py`                    | one dispatch: build worker context, run, store episode                   |
+| `src/loom/threads.py`                     | orchestrator toolset: `thread`, `thread_batch`, `threads`, `thread_read` |
+| `src/loom/prompts.py`                     | orchestrator / worker system prompts                                     |
+| `src/loom/cli.py`                         | print-mode orchestrator loop + `setup`                                   |
+| `<cwd>/.loom/episodes/<id>.jsonl`         | one file per episode                                                     |
+| `<cwd>/.loom/sessions/<session-id>.jsonl` | one file per orchestrator run                                            |
 
 `.loom/` is gitignored. `uv run loom --resume "follow-up"` appends to the latest session file; `uv run loom --session <session-id> "follow-up"` targets one explicitly.
 
