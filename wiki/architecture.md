@@ -15,7 +15,7 @@ Execution flow for one `uv run loom "..."` (`src/loom/cli.py:_run`):
 ReAct loop on any-llm. Key facts:
 
 - `Tool { name, description, parameters, execute_fn }`; `execute()` catches all exceptions into `ToolResult(text="Error: ...", is_error=True)` — tools are an isolation boundary.
-- `run_loop(provider, model, system, messages, tools, max_turns, api_key, api_base)` mutates `messages` in place (assistant + tool turns appended). Yields 5 events: `TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError`.
+- `run_loop(provider, model, system, messages, tools, max_turns, api_key, api_base)` mutates `messages` in place (assistant + tool turns appended). Yields 6 events: `TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError | RetryAttempt`. Transient `acompletion` failures yield `RetryAttempt` and retry; 3 consecutive (`MAX_CONSECUTIVE_ERRORS`) become `AgentError`. CLI prints retries to stderr.
 - Tool calls run **sequentially** in the order the model emitted them. Malformed JSON args become `{}`; unknown tool name becomes an error result, not a crash.
 - `split_model("provider:model")` splits on the first `:`; plain ids fall back to `provider` arg or `"openai"`.
 - `AnyLLM.create(provider, api_key, api_base)` is imported lazily so tests stay cheap. Provider errors surface as `AgentError`.
@@ -61,7 +61,9 @@ Failure episodes are stored but **excluded from future context** (`EpisodeStore.
 
 `Episode { thread, action, content, status=ok, created_at, id (12 hex), session }`. `content` is the worker's final response verbatim.
 
-`EpisodeStore(path)`: one file per episode at `<dir>/<id>.jsonl`. API: `append` (collision-safe), `read(thread)` (ok-only), `latest(thread)`, `names()`, `count(thread)`, `get(id)`, `by_session(id)` (failures included). Ordering is by `(mtime_ns, name)`. Corrupt lines are skipped.
+`EpisodeStore(path)`: one file per episode at `<dir>/<id>.jsonl`. API: `append` (collision-safe), `read(thread, session)` (ok-only), `latest(thread, session)`, `names(session)`, `count(thread, session)`, `get(id)`, `by_session(id)` (failures included). `read`/`latest`/`names`/`count` and `Episode(session=...)` / `run_dispatch(session=...)` / `create_thread_tools(session=...)` all require a non-empty session (`ValueError` otherwise) — threads never leak across sessions. Ordering is by `(mtime_ns, name)`. Corrupt lines are skipped.
+
+Debug-only traces: every dispatch stores its minute interaction via `append_trace` at `<id>.trace.jsonl` (`read_trace` reads it back). Traces are never injected into worker context.
 
 Renderers: `own_history_messages` (own past as `user`/`assistant` turns, verbatim), `render_source_context` (latest-of-source, via `source_message`), `render_thread_document` (for `thread_read`).
 
@@ -71,9 +73,9 @@ Orchestrator-side transcript; episodes keep worker results, sessions keep the or
 
 - `{"type":"input","text"}` — prompt (incl. each `--session` / `--resume` follow-up)
 - `{"type":"output","text","label"?}` — orchestrator text (`label` = dispatch label for tool outputs)
-- `{"type":"episode","label","id"}` — **reference only**, no content (`render(sid, store)` resolves ids to `== <label> ==\n<content>`)
+- `{"type":"episode","label","id"}` — **reference only**, no content (`messages(sid, store)` resolves refs into `role: tool` messages with the episode content)
 
-`render()` skips corrupt lines; unknown id returns `None`. `SessionStore.start()` ids look like `20260909-035154-562836`.
+`messages()` replays native OpenAI turns (user/assistant/tool, verbatim, no headers); episode refs pair via `tool_call_id` and batch refs sharing one call merge into a single tool message. Skips corrupt lines and refs without `tool_call_id`; unknown id returns `None`. `SessionStore.start()` ids look like `20260909-035154-562836`.
 
 ## Prompts — `src/loom/prompts.py`
 
