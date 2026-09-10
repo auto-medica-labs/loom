@@ -18,6 +18,7 @@ from loom.episodes import EpisodeStore
 from loom.threads import create_thread_tools, plan_waves
 
 MODEL = "fake:model"
+SID = "test-session"
 
 
 class FakeLLM:
@@ -86,11 +87,12 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: Fake
             store=episodes,
             name="impl",
             action="write the parser",
+            session=SID,
         )
     )
 
     assert answer == "wrote parser, tests pass"
-    assert [e.content for e in episodes.read("impl")] == ["wrote parser, tests pass"]
+    assert [e.content for e in episodes.read("impl", SID)] == ["wrote parser, tests pass"]
 
 
 def test_dispatch_stamps_the_session_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
@@ -109,7 +111,7 @@ def test_dispatch_stamps_the_session_id(tmp_path: Path, patch_llm: FakeLLM) -> N
         )
     )
 
-    assert episodes.read("impl")[0].session == "20260909-000000-abc123"
+    assert episodes.read("impl", "20260909-000000-abc123")[0].session == "20260909-000000-abc123"
     assert [e.thread for e in episodes.by_session("20260909-000000-abc123")] == ["impl"]
     assert episodes.by_session("other") == []
 
@@ -126,6 +128,7 @@ def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) 
             store=episodes,
             name="impl",
             action="start",
+            session=SID,
         )
         await run_dispatch(
             provider="fake",
@@ -134,6 +137,7 @@ def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) 
             store=episodes,
             name="impl",
             action="continue",
+            session=SID,
         )
 
     asyncio.run(scenario())
@@ -154,6 +158,7 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm
             store=episodes,
             name="research",
             action="look",
+            session=SID,
         )
         await run_dispatch(
             provider="fake",
@@ -162,6 +167,7 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm
             store=episodes,
             name="research",
             action="look again",
+            session=SID,
         )
         await run_dispatch(
             provider="fake",
@@ -171,6 +177,7 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm
             name="impl",
             action="build",
             source_threads=["research"],
+            session=SID,
         )
 
     asyncio.run(scenario())
@@ -190,10 +197,11 @@ def test_missing_source_thread_is_reported(tmp_path: Path, patch_llm: FakeLLM) -
             name="impl",
             action="build",
             source_threads=["nope"],
+            session=SID,
         )
     )
     assert "no retained episode" in answer
-    assert episodes.read("impl") == []
+    assert episodes.read("impl", SID) == []
 
 
 def _episodes(result: ToolResult) -> list[dict[str, str]]:
@@ -250,7 +258,7 @@ def test_batch_runs_independent_items_concurrently(tmp_path: Path, patch_llm: Fa
     )
     episodes = store(tmp_path)
     tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes
+        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes, session=SID
     )
     batch = next(t for t in tools if t.name == "thread_batch")
 
@@ -264,14 +272,16 @@ def test_batch_runs_independent_items_concurrently(tmp_path: Path, patch_llm: Fa
     elapsed, text = asyncio.run(scenario())
     assert elapsed < 0.09
     assert "a done" in text and "b done" in text
-    assert [e.content for e in episodes.read("a")] == ["a done"]
-    assert [e.content for e in episodes.read("b")] == ["b done"]
+    assert [e.content for e in episodes.read("a", SID)] == ["a done"]
+    assert [e.content for e in episodes.read("b", SID)] == ["b done"]
 
 
 def test_batch_dependent_item_sees_its_sources(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done", "b done", "synth done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     batch = next(t for t in tools if t.name == "thread_batch")
 
     async def scenario() -> ToolResult:
@@ -291,13 +301,15 @@ def test_batch_dependent_item_sees_its_sources(tmp_path: Path, patch_llm: FakeLL
     assert [e["text"] for e in _episodes(result)][2] == "synth done"
     injected = next(user_text(c) for c in patch_llm.calls if "combine" in user_text(c))
     assert "a done" in injected and "b done" in injected
-    assert [e.content for e in episodes.read("synth")] == ["synth done"]
+    assert [e.content for e in episodes.read("synth", SID)] == ["synth done"]
 
 
 def test_batch_skips_dependent_when_source_fails(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     batch = next(t for t in tools if t.name == "thread_batch")
 
     async def scenario() -> ToolResult:
@@ -314,38 +326,44 @@ def test_batch_skips_dependent_when_source_fails(tmp_path: Path, patch_llm: Fake
     result = asyncio.run(scenario())
     assert "source thread 'b' failed" in result.text
     assert _episodes(result)[2]["text"].startswith("Error: source thread 'b' failed")
-    assert episodes.read("a") != []
-    assert episodes.read("b") == []
-    assert episodes.read("synth") == []
+    assert episodes.read("a", SID) != []
+    assert episodes.read("b", SID) == []
+    assert episodes.read("synth", SID) == []
 
 
 def test_batch_rejects_duplicate_names_before_dispatching(
     tmp_path: Path, patch_llm: FakeLLM
 ) -> None:
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     batch = next(t for t in tools if t.name == "thread_batch")
     text = asyncio.run(
         batch.execute({"items": [{"name": "a", "action": "one"}, {"name": "a", "action": "two"}]})
     ).text
     assert "Duplicate thread name 'a'" in text
-    assert episodes.names() == []
+    assert episodes.names(SID) == []
 
 
 def test_thread_result_carries_the_stored_episode_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     thread = next(t for t in tools if t.name == "thread")
     result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
-    stored = episodes.read("impl")[0]
+    stored = episodes.read("impl", SID)[0]
     assert _episodes(result)[0]["id"] == stored.id
 
 
 def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     thread = next(t for t in tools if t.name == "thread")
     result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
     assert [e["name"] for e in _episodes(result)] == ["impl"]
@@ -355,7 +373,9 @@ def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: Fak
 def test_threads_tool_lists_threads_and_counts(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a", "b"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(provider="fake", model=MODEL, worker_tools=[], store=episodes)
+    tools = create_thread_tools(
+        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
+    )
     thread = next(t for t in tools if t.name == "thread")
     listing = next(t for t in tools if t.name == "threads")
 
@@ -380,7 +400,7 @@ def test_thread_tool_rejects_a_second_concurrent_dispatch(
     )
     episodes = store(tmp_path)
     tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes
+        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes, session=SID
     )
     thread = next(t for t in tools if t.name == "thread")
 
@@ -437,9 +457,10 @@ def test_malformed_response_stores_error_episode_not_crash(
             store=episodes,
             name="impl",
             action="build",
+            session=SID,
         )
     )
     assert answer.startswith("Error: thread 'impl' produced no episode")
-    persisted = episodes.by_session("")
+    persisted = episodes.by_session(SID)
     assert len(persisted) == 1 and persisted[0].status == "error"
     assert episodes.read_trace(persisted[0].id) != []

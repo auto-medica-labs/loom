@@ -29,9 +29,7 @@ def _with_episodes(text: str, episodes: Sequence[tuple[str, str, str | None]]) -
     )
 
 
-def _stored_id(
-    store: EpisodeStore, name: str, text: str, session: str | None = None
-) -> str | None:
+def _stored_id(store: EpisodeStore, name: str, text: str, session: str) -> str | None:
     """Id of the episode just stored, or None for failed dispatches."""
     if text.startswith("Error:"):
         return None
@@ -113,13 +111,15 @@ def create_thread_tools(
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
     on_event: WorkerListener | None = None,
-    session: str = "",
+    session: str,
 ) -> list[Tool]:
     """Tools for an orchestrator that cannot touch files itself.
 
     Everything it can do is: hand a bounded action to a worker, and read back
     the episode the worker stored.
     """
+    if not session:
+        raise ValueError("create_thread_tools requires a non-empty session.")
     active: set[str] = set()
 
     async def dispatch(args: dict[str, Any]) -> ToolResult:
@@ -149,7 +149,7 @@ def create_thread_tools(
         finally:
             active.discard(name)
         return _with_episodes(
-            episode, [(name, episode, _stored_id(store, name, episode, session or None))]
+            episode, [(name, episode, _stored_id(store, name, episode, session))]
         )
 
     async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
@@ -233,24 +233,23 @@ def create_thread_tools(
 
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
         entries = [
-            (names[i], results[i], _stored_id(store, names[i], results[i], session or None))
+            (names[i], results[i], _stored_id(store, names[i], results[i], session))
             for i in range(len(names))
         ]
         return _with_episodes(body, entries)
 
     async def list_threads(args: dict[str, Any]) -> ToolResult:
-        scope = session or None
-        names = store.names(session=scope)
+        names = store.names(session=session)
         if not names:
             return _result("No active threads in this session.")
-        lines = [f"- {name} | {store.count(name, session=scope)} episodes" for name in names]
+        lines = [f"- {name} | {store.count(name, session=session)} episodes" for name in names]
         return _result("Active threads:\n" + "\n".join(lines))
 
     async def read_thread(args: dict[str, Any]) -> ToolResult:
         name = _text(args, "name")
         if not name:
             return _result("Error: thread_read requires 'name'.")
-        return _result(render_thread_document(name, store.read(name, session=session or None)))
+        return _result(render_thread_document(name, store.read(name, session=session)))
 
     return [
         Tool(

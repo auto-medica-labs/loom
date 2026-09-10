@@ -13,9 +13,9 @@ def test_episode_lines_are_references_resolved_in_messages(tmp_path: Path) -> No
     from loom.episodes import Episode, EpisodeStore
 
     episodes = EpisodeStore(tmp_path / "episodes")
-    episodes.append(Episode("research", "look", "found README"))
-    episodes.append(Episode("signals", "look", "pyproject only"))
-    first, second = episodes.read("research") + episodes.read("signals")
+    episodes.append(Episode("research", "look", "found README", session="s1"))
+    episodes.append(Episode("signals", "look", "pyproject only", session="s1"))
+    first, second = episodes.read("research", "s1") + episodes.read("signals", "s1")
 
     sessions = SessionStore(tmp_path / "sessions")
     sid = sessions.start("what is this repo?")
@@ -115,8 +115,8 @@ def test_messages_replays_native_roles(tmp_path: Path) -> None:
     from loom.sessions import SessionStore
 
     episodes = EpisodeStore(tmp_path / "episodes")
-    episodes.append(Episode("impl/auth", "add JWT", "added middleware + tests"))
-    (episode,) = episodes.read("impl/auth")
+    episodes.append(Episode("impl/auth", "add JWT", "added middleware + tests", session="s1"))
+    (episode,) = episodes.read("impl/auth", "s1")
 
     sessions = SessionStore(tmp_path / "sessions")
     sid = sessions.start("add auth")
@@ -157,10 +157,10 @@ def test_messages_groups_batch_episodes_into_one_tool_message(tmp_path: Path) ->
     from loom.sessions import SessionStore
 
     episodes = EpisodeStore(tmp_path / "episodes")
-    episodes.append(Episode("a", "look", "first"))
-    episodes.append(Episode("b", "look", "second"))
-    (first,) = episodes.read("a")
-    (second,) = episodes.read("b")
+    episodes.append(Episode("a", "look", "first", session="s1"))
+    episodes.append(Episode("b", "look", "second", session="s1"))
+    (first,) = episodes.read("a", "s1")
+    (second,) = episodes.read("b", "s1")
 
     sessions = SessionStore(tmp_path / "sessions")
     sid = sessions.start("explore")
@@ -183,12 +183,12 @@ def test_messages_splits_episodes_with_different_call_ids(tmp_path: Path) -> Non
     from loom.sessions import SessionStore
 
     episodes = EpisodeStore(tmp_path / "episodes")
-    episodes.append(Episode("a", "look", "first"))
-    episodes.append(Episode("b", "look", "second"))
-    episodes.append(Episode("c", "look", "third"))
-    (first,) = episodes.read("a")
-    (second,) = episodes.read("b")
-    (third,) = episodes.read("c")
+    episodes.append(Episode("a", "look", "first", session="s1"))
+    episodes.append(Episode("b", "look", "second", session="s1"))
+    episodes.append(Episode("c", "look", "third", session="s1"))
+    (first,) = episodes.read("a", "s1")
+    (second,) = episodes.read("b", "s1")
+    (third,) = episodes.read("c", "s1")
 
     sessions = SessionStore(tmp_path / "sessions")
     sid = sessions.start("explore")
@@ -235,8 +235,8 @@ def test_messages_skips_episode_ref_without_call_id(tmp_path: Path) -> None:
     from loom.sessions import SessionStore
 
     episodes = EpisodeStore(tmp_path / "episodes")
-    episodes.append(Episode("research", "look", "found README"))
-    (episode,) = episodes.read("research")
+    episodes.append(Episode("research", "look", "found README", session="s1"))
+    (episode,) = episodes.read("research", "s1")
 
     sessions = SessionStore(tmp_path / "sessions")
     sid = sessions.start("what is this repo?")

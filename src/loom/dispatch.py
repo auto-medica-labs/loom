@@ -68,7 +68,7 @@ async def run_dispatch(
     store: EpisodeStore,
     name: str,
     action: str,
-    session: str = "",
+    session: str,
     source_threads: Sequence[str] = (),
     working_directory: str | Path = ".",
     timeout_secs: float = DEFAULT_TIMEOUT_SECS,
@@ -81,15 +81,16 @@ async def run_dispatch(
     episodes, the latest episode of each source thread, and the action. Its
     final response is stored as the next episode for `name` and returned.
     """
+    if not session:
+        raise ValueError("run_dispatch requires a non-empty session.")
     system = worker_prompt(str(working_directory))
-    scope = session or None
 
     messages: list[dict[str, Any]] = []
-    own = store.read(name, session=scope)
+    own = store.read(name, session=session)
     if own:
         messages.append({"role": "user", "content": render_self_context(name, own)})
     for source in source_threads:
-        episode = store.latest(source, session=scope)
+        episode = store.latest(source, session=session)
         if episode is None:
             return f"Error: source thread '{source}' has no retained episode."
         messages.append({"role": "user", "content": render_source_context(episode)})

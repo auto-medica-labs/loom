@@ -41,7 +41,11 @@ class Episode:
     status: str = OK
     created_at: str = field(default_factory=_now)
     id: str = field(default_factory=_new_id)
-    session: str = ""
+    session: str = field(kw_only=True)
+
+    def __post_init__(self) -> None:
+        if not self.session:
+            raise ValueError("Episode requires a non-empty session.")
 
 
 class EpisodeStore:
@@ -116,31 +120,30 @@ class EpisodeStore:
             episodes.append(episode)
         return episodes
 
-    def read(self, thread: str, session: str | None = None) -> list[Episode]:
-        """Retained handoffs for one thread. Failed dispatches are excluded: a
-        worker that died must never become context for the next one.
-
-        Session-scoped: `session=None` reads across sessions (back-compat /
-        tests); any string (including `""`) filters to that session only."""
+    def read(self, thread: str, session: str) -> list[Episode]:
+        """Retained handoffs for one thread in one session. Failed dispatches
+        are excluded: a worker that died must never become context."""
+        if not session:
+            raise ValueError("EpisodeStore.read requires a non-empty session.")
         return [
-            e
-            for e in self._load(ok_only=True)
-            if e.thread == thread and (session is None or e.session == session)
+            e for e in self._load(ok_only=True) if e.thread == thread and e.session == session
         ]
 
-    def latest(self, thread: str, session: str | None = None) -> Episode | None:
+    def latest(self, thread: str, session: str) -> Episode | None:
         episodes = self.read(thread, session=session)
         return episodes[-1] if episodes else None
 
-    def names(self, session: str | None = None) -> list[str]:
+    def names(self, session: str) -> list[str]:
+        if not session:
+            raise ValueError("EpisodeStore.names requires a non-empty session.")
         seen: dict[str, int] = {}
         for episode in self._load(ok_only=True):
-            if session is not None and episode.session != session:
+            if episode.session != session:
                 continue
             seen[episode.thread] = seen.get(episode.thread, 0) + 1
         return sorted(seen)
 
-    def count(self, thread: str, session: str | None = None) -> int:
+    def count(self, thread: str, session: str) -> int:
         return len(self.read(thread, session=session))
 
     def get(self, episode_id: str) -> Episode | None:
@@ -156,9 +159,10 @@ class EpisodeStore:
 
 
 def _header(index: int, episode: Episode) -> str:
-    header = f"\n=== Episode {index} | {episode.created_at} | action: {episode.action}"
-    if episode.session:
-        header += f" | session: {episode.session}"
+    header = (
+        f"\n=== Episode {index} | {episode.created_at} | action: {episode.action}"
+        f" | session: {episode.session}"
+    )
     return header + f" ===\n{episode.content}"
 
 
