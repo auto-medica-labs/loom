@@ -66,7 +66,13 @@ class AgentError:
     message: str
 
 
-Event = TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError
+@dataclass(frozen=True, slots=True)
+class RetryAttempt:
+    attempt: int
+    message: str
+
+
+Event = TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError | RetryAttempt
 
 MAX_CONSECUTIVE_ERRORS = 3
 
@@ -137,6 +143,7 @@ async def run_loop(
             raw_calls = getattr(msg, "tool_calls", None) or []
         except Exception as exc:
             errors += 1
+            yield RetryAttempt(attempt=errors, message=str(exc))
             if errors >= MAX_CONSECUTIVE_ERRORS:
                 yield AgentError(message=str(exc))
                 return
@@ -214,6 +221,7 @@ __all__ = [
     "AgentError",
     "AssistantEnd",
     "Event",
+    "RetryAttempt",
     "TextDelta",
     "Tool",
     "ToolEnd",

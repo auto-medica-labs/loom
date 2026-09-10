@@ -12,6 +12,7 @@ from loom.agent import (
     AgentError,
     AssistantEnd,
     Event,
+    RetryAttempt,
     TextDelta,
     Tool,
     ToolEnd,
@@ -25,8 +26,8 @@ from loom.episodes import (
     TIMED_OUT,
     Episode,
     EpisodeStore,
-    render_self_context,
-    render_source_context,
+    own_history_messages,
+    source_message,
 )
 from loom.prompts import worker_prompt
 
@@ -57,6 +58,8 @@ def _event_to_dict(event: Event) -> dict[str, Any]:
         }
     if isinstance(event, AssistantEnd):
         return {"type": "assistant", "text": event.text, "tool_calls": event.tool_calls}
+    if isinstance(event, RetryAttempt):
+        return {"type": "retry", "attempt": event.attempt, "message": event.message}
     return {"type": "error", "message": event.message}
 
 
@@ -77,9 +80,10 @@ async def run_dispatch(
 ) -> str:
     """Run one action in a worker and return the episode it handed back.
 
-    The worker only ever sees: the worker prompt, this thread's own retained
-    episodes, the latest episode of each source thread, and the action. Its
-    final response is stored as the next episode for `name` and returned.
+    The worker only ever sees: the worker prompt, its own past as proper
+    `user` (action) / `assistant` (episode) turns, the latest episode of
+    each source thread as orchestrator input, and the action. Its final
+    response is stored as the next episode for `name` and returned.
     """
     if not session:
         raise ValueError("run_dispatch requires a non-empty session.")
@@ -87,13 +91,12 @@ async def run_dispatch(
 
     messages: list[dict[str, Any]] = []
     own = store.read(name, session=session)
-    if own:
-        messages.append({"role": "user", "content": render_self_context(name, own)})
+    messages.extend(own_history_messages(name, own))
     for source in source_threads:
         episode = store.latest(source, session=session)
         if episode is None:
             return f"Error: source thread '{source}' has no retained episode."
-        messages.append({"role": "user", "content": render_source_context(episode)})
+        messages.append(source_message(episode))
     messages.append({"role": "user", "content": action})
 
     final = ""

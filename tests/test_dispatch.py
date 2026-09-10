@@ -141,9 +141,33 @@ def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) 
         )
 
     asyncio.run(scenario())
-    history = user_text(patch_llm.calls[1])
-    assert "first pass" in history
-    assert "continue" in history
+    turns = [m for m in patch_llm.calls[1] if m.get("role") != "system"]
+    assert [(m.get("role"), m.get("content")) for m in turns] == [
+        ("user", "start"),
+        ("assistant", "first pass"),
+        ("user", "continue"),
+    ]
+
+
+def test_reused_thread_history_is_verbatim_without_headers(
+    tmp_path: Path, patch_llm: FakeLLM
+) -> None:
+    use_script(patch_llm, ["first pass"])
+    episodes = store(tmp_path)
+    asyncio.run(
+        run_dispatch(
+            provider="fake",
+            model=MODEL,
+            worker_tools=[],
+            store=episodes,
+            name="impl",
+            action="start",
+            session=SID,
+        )
+    )
+    assert [m.get("content") for m in patch_llm.calls[0] if m.get("role") != "system"] == [
+        "start"
+    ]
 
 
 def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
@@ -426,12 +450,16 @@ async def _collect_loop(patch_llm: FakeLLM) -> list:
 
 
 def test_run_loop_retries_transient_failures_then_recovers(patch_llm: FakeLLM) -> None:
-    from loom.agent import AgentError, AssistantEnd
+    from loom.agent import AgentError, AssistantEnd, RetryAttempt
 
     use_script(patch_llm, [RuntimeError("flake"), RuntimeError("flake"), "recovered"])
     events = asyncio.run(_collect_loop(patch_llm))
     assert not [e for e in events if isinstance(e, AgentError)]
     assert [e.text for e in events if isinstance(e, AssistantEnd)] == ["recovered"]
+    assert [(e.attempt, e.message) for e in events if isinstance(e, RetryAttempt)] == [
+        (1, "flake"),
+        (2, "flake"),
+    ]
     assert len(patch_llm.calls) == 3
 
 

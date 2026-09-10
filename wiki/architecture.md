@@ -35,7 +35,7 @@ ReAct loop on any-llm. Key facts:
 
 `run_dispatch(provider, model, worker_tools, store, name, action, session, source_threads, working_directory, timeout_secs=1800, max_turns=64, on_event)`:
 
-1. Builds worker messages: thread's **own retained episodes** (`render_self_context`, full history) + **latest episode of each named source** (`render_source_context`, latest only) + the action. Missing source → immediate `Error: source thread '...' has no retained episode.` with nothing stored.
+1. Builds worker messages: thread's **own past as proper `user` (action) / `assistant` (episode) turns** (`own_history_messages`, full history, verbatim) + **latest episode of each named source** as orchestrator input (`source_message`, latest only) + the action. Missing source → immediate `Error: source thread '...' has no retained episode.` with nothing stored.
 2. Runs `run_loop` with `worker_prompt` via `asyncio.wait_for(consume(), timeout)`. Last non-empty `AssistantEnd` wins as `final`.
 3. Stores one `Episode(name, action, final, status, session)`: `ok` on success; `timed_out` / `cancelled` / `error` (empty final) otherwise — and returns the text or an `Error: ...` string. Timeout message: `Error: thread '<name>' timed out after <N>s.`
 4. `on_event(name, event)` mirrors worker `ToolStart/ToolEnd` lines to the CLI (`    [<name>] ...`).
@@ -63,7 +63,7 @@ Failure episodes are stored but **excluded from future context** (`EpisodeStore.
 
 `EpisodeStore(path)`: one file per episode at `<dir>/<id>.jsonl`. API: `append` (collision-safe), `read(thread)` (ok-only), `latest(thread)`, `names()`, `count(thread)`, `get(id)`, `by_session(id)` (failures included). Ordering is by `(mtime_ns, name)`. Corrupt lines are skipped.
 
-Renderers: `render_self_context` (numbered `=== Episode N | ... ===` history), `render_source_context` (latest-of-source), `render_thread_document` (for `thread_read`).
+Renderers: `own_history_messages` (own past as `user`/`assistant` turns, verbatim), `render_source_context` (latest-of-source, via `source_message`), `render_thread_document` (for `thread_read`).
 
 ## Sessions — `src/loom/sessions.py`
 

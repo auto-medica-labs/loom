@@ -13,7 +13,16 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
-from loom.agent import AgentError, AssistantEnd, TextDelta, Tool, ToolEnd, ToolStart, run_loop
+from loom.agent import (
+    AgentError,
+    AssistantEnd,
+    RetryAttempt,
+    TextDelta,
+    Tool,
+    ToolEnd,
+    ToolStart,
+    run_loop,
+)
 from loom.engine import build_engine, credential_path, load_credentials, save_credentials
 from loom.episodes import EpisodeStore
 from loom.prompts import orchestrator_prompt
@@ -159,6 +168,8 @@ async def _run(args: argparse.Namespace) -> None:
         elif isinstance(event, ToolEnd):
             status = "error" if event.is_error else "ok"
             print(f"    [{name}] -> {status}: {_preview(event.result.text)}")
+        elif isinstance(event, RetryAttempt):
+            print(f"    [{name}] retry {event.attempt}/3: {event.message}", file=sys.stderr)
 
     tools: list[Tool] = create_thread_tools(
         provider=provider,
@@ -204,6 +215,8 @@ async def _run(args: argparse.Namespace) -> None:
                 sessions.log_output(session_id, event.text.strip())
         elif isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
+        elif isinstance(event, RetryAttempt):
+            print(f"retry {event.attempt}/3: {event.message}", file=sys.stderr)
         elif isinstance(event, AgentError):
             print(f"error: {event.message}", file=sys.stderr)
 

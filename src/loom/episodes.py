@@ -166,11 +166,22 @@ def _header(index: int, episode: Episode) -> str:
     return header + f" ===\n{episode.content}"
 
 
-def render_self_context(thread: str, episodes: list[Episode]) -> str:
-    """This thread's own history, injected as the worker's memory."""
-    rendered = [f'Retained history for thread "{thread}":']
-    rendered.extend(_header(index, episode) for index, episode in enumerate(episodes, start=1))
-    return "\n".join(rendered)
+def own_history_messages(thread: str, episodes: list[Episode]) -> list[dict[str, Any]]:
+    """This thread's own past as proper turns, like the orchestrator replay.
+
+    Each prior action replays as `user`, each episode as the `assistant`
+    reply — verbatim, no headers. The worker sees its own past the way it
+    happened instead of one flattened `user` blob."""
+    messages: list[dict[str, Any]] = []
+    for episode in episodes:
+        messages.append({"role": "user", "content": episode.action})
+        messages.append({"role": "assistant", "content": episode.content})
+    return messages
+
+
+def source_message(episode: Episode) -> dict[str, Any]:
+    """Latest episode of another thread, as orchestrator-provided input."""
+    return {"role": "user", "content": render_source_context(episode)}
 
 
 def render_source_context(episode: Episode) -> str:
