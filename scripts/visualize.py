@@ -36,7 +36,8 @@ def _specs(session_path: Path) -> dict[str, dict]:
                     continue
             if not isinstance(arg, dict):
                 continue
-            items = arg.get("items") if isinstance(arg.get("items"), list) else [arg]
+            raw = arg.get("items")
+            items = raw if isinstance(raw, list) else [arg]
             for item in items:
                 if isinstance(item, dict) and item.get("name"):
                     found[str(item["name"])] = {
