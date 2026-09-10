@@ -169,7 +169,13 @@ async def _run(args: argparse.Namespace) -> None:
             status = "error" if event.is_error else "ok"
             print(f"    [{name}] -> {status}: {_preview(event.result.text)}")
         elif isinstance(event, RetryAttempt):
-            print(f"    [{name}] retry {event.attempt}/3: {event.message}", file=sys.stderr)
+            preview = _preview(event.message, EPISODE_PREVIEW)
+            print(f"    [{name}] !! retry {event.attempt}/3: {preview}", file=sys.stderr)
+        elif isinstance(event, AgentError):
+            print(
+                f"    [{name}] !! error: {_preview(event.message, EPISODE_PREVIEW)}",
+                file=sys.stderr,
+            )
 
     tools: list[Tool] = create_thread_tools(
         provider=provider,
@@ -216,9 +222,12 @@ async def _run(args: argparse.Namespace) -> None:
         elif isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
         elif isinstance(event, RetryAttempt):
-            print(f"retry {event.attempt}/3: {event.message}", file=sys.stderr)
+            print(
+                f"!! retry {event.attempt}/3: {_preview(event.message, EPISODE_PREVIEW)}",
+                file=sys.stderr,
+            )
         elif isinstance(event, AgentError):
-            print(f"error: {event.message}", file=sys.stderr)
+            print(f"!! error: {_preview(event.message, EPISODE_PREVIEW)}", file=sys.stderr)
 
     print(f"\nsession: {sessions.path_of(session_id)}")
 

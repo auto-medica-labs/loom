@@ -125,9 +125,7 @@ class EpisodeStore:
         are excluded: a worker that died must never become context."""
         if not session:
             raise ValueError("EpisodeStore.read requires a non-empty session.")
-        return [
-            e for e in self._load(ok_only=True) if e.thread == thread and e.session == session
-        ]
+        return [e for e in self._load(ok_only=True) if e.thread == thread and e.session == session]
 
     def latest(self, thread: str, session: str) -> Episode | None:
         episodes = self.read(thread, session=session)

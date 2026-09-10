@@ -138,9 +138,7 @@ class SessionStore:
                 if pending_cid is not None and cid != pending_cid:
                     flush_pending()
                 pending_cid = cid
-                pending_parts.append(
-                    (_episode_label(record), _episode_content(record, store))
-                )
+                pending_parts.append((_episode_label(record), _episode_content(record, store)))
                 continue
             flush_pending()
             message = _record_to_message(record, store)

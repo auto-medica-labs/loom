@@ -165,9 +165,7 @@ def test_reused_thread_history_is_verbatim_without_headers(
             session=SID,
         )
     )
-    assert [m.get("content") for m in patch_llm.calls[0] if m.get("role") != "system"] == [
-        "start"
-    ]
+    assert [m.get("content") for m in patch_llm.calls[0] if m.get("role") != "system"] == ["start"]
 
 
 def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:

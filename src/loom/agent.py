@@ -189,9 +189,7 @@ async def run_loop(
         )
         yield AssistantEnd(
             text=text,
-            tool_calls=[
-                {"id": cid, "name": name, "arguments": args} for cid, name, args in calls
-            ],
+            tool_calls=[{"id": cid, "name": name, "arguments": args} for cid, name, args in calls],
         )
 
         if not calls:

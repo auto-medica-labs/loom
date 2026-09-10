@@ -148,9 +148,7 @@ def create_thread_tools(
             )
         finally:
             active.discard(name)
-        return _with_episodes(
-            episode, [(name, episode, _stored_id(store, name, episode, session))]
-        )
+        return _with_episodes(episode, [(name, episode, _stored_id(store, name, episode, session))])
 
     async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
         items = args.get("items")

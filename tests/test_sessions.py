@@ -244,9 +244,7 @@ def test_messages_skips_episode_ref_without_call_id(tmp_path: Path) -> None:
     # Hand-written ref with no tool_call_id: cannot pair with an assistant
     # turn, so it is skipped, not replayed.
     with sessions.path_of(sid).open("a", encoding="utf-8") as handle:
-        handle.write(
-            json.dumps({"type": "episode", "label": "research", "id": episode.id}) + "\n"
-        )
+        handle.write(json.dumps({"type": "episode", "label": "research", "id": episode.id}) + "\n")
 
     assert sessions.messages(sid, episodes) == [
         {"role": "user", "content": "what is this repo?"},
