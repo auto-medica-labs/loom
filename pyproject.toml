@@ -1,6 +1,6 @@
 [project]
 name = "loom-threads"
-version = "0.1.0"
+version = "0.2.0"
 description = "Thread-and-episode orchestration on its own any-llm engine."
 readme = "README.md"
 requires-python = ">=3.12"
