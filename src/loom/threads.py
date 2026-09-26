@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from typing import Any
 
 from loom.agent import Tool, ToolResult
-from loom.dispatch import DEFAULT_TIMEOUT_SECS, WorkerListener, run_dispatch
+from loom.dispatch import Dispatcher
 from loom.episodes import EpisodeStore, render_thread_document
 
 
@@ -102,55 +101,42 @@ def plan_waves(
     return waves, deps
 
 
-def create_thread_tools(
-    *,
-    provider: str | None,
-    model: str,
-    worker_tools: Sequence[Tool],
-    store: EpisodeStore,
-    working_directory: str | Path = ".",
-    timeout_secs: float = DEFAULT_TIMEOUT_SECS,
-    on_event: WorkerListener | None = None,
-    session: str,
-) -> list[Tool]:
+class Orchestrator:
     """Tools for an orchestrator that cannot touch files itself.
 
     Everything it can do is: hand a bounded action to a worker, and read back
     the episode the worker stored.
     """
-    if not session:
-        raise ValueError("create_thread_tools requires a non-empty session.")
-    active: set[str] = set()
 
-    async def dispatch(args: dict[str, Any]) -> ToolResult:
+    def __init__(self, *, dispatcher: Dispatcher) -> None:
+        self.dispatcher = dispatcher
+        self.store = dispatcher.store
+        self.session = dispatcher.session
+        self._active: set[str] = set()
+
+    async def dispatch_thread(self, args: dict[str, Any]) -> ToolResult:
         name = _text(args, "name")
         action = _text(args, "action")
         if not name or not action:
             return _result("Error: thread requires 'name' and 'action'.")
-        if name in active:
+        if name in self._active:
             return _result(f"Error: thread '{name}' is already running; retry after it completes.")
 
-        timeout = _number(args, "timeout") or timeout_secs
-        active.add(name)
+        self._active.add(name)
         try:
-            episode = await run_dispatch(
-                provider=provider,
-                model=model,
-                worker_tools=worker_tools,
-                store=store,
+            episode = await self.dispatcher.dispatch(
                 name=name,
                 action=action,
-                session=session,
                 source_threads=_string_list(args, "threads"),
-                working_directory=working_directory,
-                timeout_secs=timeout,
-                on_event=on_event,
+                timeout_secs=_number(args, "timeout"),
             )
         finally:
-            active.discard(name)
-        return _with_episodes(episode, [(name, episode, _stored_id(store, name, episode, session))])
+            self._active.discard(name)
+        return _with_episodes(
+            episode, [(name, episode, _stored_id(self.store, name, episode, self.session))]
+        )
 
-    async def dispatch_batch(args: dict[str, Any]) -> ToolResult:
+    async def dispatch_batch(self, args: dict[str, Any]) -> ToolResult:
         items = args.get("items")
         if not isinstance(items, list) or not items:
             return _result("Error: thread_batch requires a non-empty 'items' list.")
@@ -175,7 +161,7 @@ def create_thread_tools(
         except ValueError as error:
             return _result(f"Error: {error}")
 
-        busy = sorted(set(names) & active)
+        busy = sorted(set(names) & self._active)
         if busy:
             return _result(
                 f"Error: thread(s) {', '.join(busy)} already running; retry after they complete."
@@ -183,7 +169,7 @@ def create_thread_tools(
 
         results: dict[int, str] = {}
         failed: set[int] = set()
-        active.update(names)
+        self._active.update(names)
         try:
             for wave in waves:
                 runnable: list[int] = []
@@ -201,18 +187,11 @@ def create_thread_tools(
                     continue
                 outcomes = await asyncio.gather(
                     *(
-                        run_dispatch(
-                            provider=provider,
-                            model=model,
-                            worker_tools=worker_tools,
-                            store=store,
+                        self.dispatcher.dispatch(
                             name=names[index],
                             action=actions[index],
-                            session=session,
                             source_threads=sources[index],
-                            working_directory=working_directory,
-                            timeout_secs=timeouts[index] or timeout_secs,
-                            on_event=on_event,
+                            timeout_secs=timeouts[index],
                         )
                         for index in runnable
                     ),
@@ -227,90 +206,96 @@ def create_thread_tools(
                         if outcome.startswith("Error:"):
                             failed.add(index)
         finally:
-            active.difference_update(names)
+            self._active.difference_update(names)
 
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
         entries = [
-            (names[i], results[i], _stored_id(store, names[i], results[i], session))
+            (names[i], results[i], _stored_id(self.store, names[i], results[i], self.session))
             for i in range(len(names))
         ]
         return _with_episodes(body, entries)
 
-    async def list_threads(args: dict[str, Any]) -> ToolResult:
-        names = store.names(session=session)
+    async def list_threads(self, args: dict[str, Any]) -> ToolResult:
+        names = self.store.names(session=self.session)
         if not names:
             return _result("No active threads in this session.")
-        lines = [f"- {name} | {store.count(name, session=session)} episodes" for name in names]
+        lines = [
+            f"- {name} | {self.store.count(name, session=self.session)} episodes" for name in names
+        ]
         return _result("Active threads:\n" + "\n".join(lines))
 
-    async def read_thread(args: dict[str, Any]) -> ToolResult:
+    async def read_thread(self, args: dict[str, Any]) -> ToolResult:
         name = _text(args, "name")
         if not name:
             return _result("Error: thread_read requires 'name'.")
-        return _result(render_thread_document(name, store.read(name, session=session)))
+        return _result(render_thread_document(name, self.store.read(name, session=self.session)))
 
-    return [
-        Tool(
-            name="thread",
-            description=(
-                "Dispatch a named worker thread. The worker reuses its own retained "
-                "history and can read the latest retained episode of each named source "
-                "thread. Its final response becomes the thread's next episode."
-            ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "action": {"type": "string"},
-                    "threads": {"type": "array", "items": {"type": "string"}},
-                    "timeout": {"type": "number"},
+    def tools(self) -> list[Tool]:
+        return [
+            Tool(
+                name="thread",
+                description=(
+                    "Dispatch a named worker thread. The worker reuses its own retained "
+                    "history and can read the latest retained episode of each named source "
+                    "thread. Its final response becomes the thread's next episode."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "action": {"type": "string"},
+                        "threads": {"type": "array", "items": {"type": "string"}},
+                        "timeout": {"type": "number"},
+                    },
+                    "required": ["name", "action"],
                 },
-                "required": ["name", "action"],
-            },
-            execute_fn=dispatch,
-        ),
-        Tool(
-            name="thread_batch",
-            description=(
-                "Dispatch several threads as one batch. Items with no dependency on "
-                "another item in this batch run concurrently; an item that names "
-                "another batch item as a source waits for it and receives its episode."
+                execute_fn=self.dispatch_thread,
             ),
-            parameters={
-                "type": "object",
-                "properties": {
-                    "items": {
-                        "type": "array",
+            Tool(
+                name="thread_batch",
+                description=(
+                    "Dispatch several threads as one batch. Items with no dependency on "
+                    "another item in this batch run concurrently; an item that names "
+                    "another batch item as a source waits for it and receives its episode."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
                         "items": {
-                            "type": "object",
-                            "properties": {
-                                "name": {"type": "string"},
-                                "action": {"type": "string"},
-                                "threads": {"type": "array", "items": {"type": "string"}},
-                                "timeout": {"type": "number"},
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "action": {"type": "string"},
+                                    "threads": {"type": "array", "items": {"type": "string"}},
+                                    "timeout": {"type": "number"},
+                                },
+                                "required": ["name", "action"],
                             },
-                            "required": ["name", "action"],
-                        },
-                    }
+                        }
+                    },
+                    "required": ["items"],
                 },
-                "required": ["items"],
-            },
-            execute_fn=dispatch_batch,
-        ),
-        Tool(
-            name="threads",
-            description="List threads in this session and their episode counts.",
-            parameters={"type": "object", "properties": {}},
-            execute_fn=list_threads,
-        ),
-        Tool(
-            name="thread_read",
-            description="Read the full retained episode history for one thread.",
-            parameters={
-                "type": "object",
-                "properties": {"name": {"type": "string"}},
-                "required": ["name"],
-            },
-            execute_fn=read_thread,
-        ),
-    ]
+                execute_fn=self.dispatch_batch,
+            ),
+            Tool(
+                name="threads",
+                description="List threads in this session and their episode counts.",
+                parameters={"type": "object", "properties": {}},
+                execute_fn=self.list_threads,
+            ),
+            Tool(
+                name="thread_read",
+                description="Read the full retained episode history for one thread.",
+                parameters={
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+                execute_fn=self.read_thread,
+            ),
+        ]
+
+
+__all__ = ["Orchestrator", "plan_waves"]

@@ -13,27 +13,6 @@ from loom.agent import Tool, ToolResult
 MAX_BYTES = 50 * 1024
 MAX_LINES = 2_000
 
-_locks: dict[Path, asyncio.Lock] = {}
-
-
-def _lock(path: Path) -> asyncio.Lock:
-    lock = _locks.get(path)
-    if lock is None:
-        lock = asyncio.Lock()
-        _locks[path] = lock
-    return lock
-
-
-def _resolve(cwd: Path, raw: Any) -> Path:
-    if not isinstance(raw, str) or not raw:
-        raise ValueError("path must be a non-empty string")
-    p = Path(raw)
-    resolved = (cwd / p).resolve() if not p.is_absolute() else p.resolve()
-    # ponytail: cwd jail is security, never simplify away
-    if resolved != cwd.resolve() and cwd.resolve() not in resolved.parents:
-        raise ValueError(f"path escapes working directory: {raw}")
-    return resolved
-
 
 def _truncate(text: str) -> str:
     lines = text.splitlines()
@@ -50,12 +29,37 @@ def _truncate(text: str) -> str:
     return text
 
 
-def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
-    root = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+class CodingToolkit:
+    """The four worker tools, jailed to one working directory.
 
-    async def read_fn(args: dict[str, Any]) -> ToolResult:
+    Owns the per-path edit locks so two toolkits never contend on each
+    other's files.
+    """
+
+    def __init__(self, cwd: str | Path | None = None) -> None:
+        self.root = Path(cwd).resolve() if cwd else Path.cwd().resolve()
+        self._locks: dict[Path, asyncio.Lock] = {}
+
+    def _lock(self, path: Path) -> asyncio.Lock:
+        lock = self._locks.get(path)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[path] = lock
+        return lock
+
+    def _resolve(self, raw: Any) -> Path:
+        if not isinstance(raw, str) or not raw:
+            raise ValueError("path must be a non-empty string")
+        p = Path(raw)
+        resolved = (self.root / p).resolve() if not p.is_absolute() else p.resolve()
+        # ponytail: cwd jail is security, never simplify away
+        if resolved != self.root and self.root not in resolved.parents:
+            raise ValueError(f"path escapes working directory: {raw}")
+        return resolved
+
+    async def read(self, args: dict[str, Any]) -> ToolResult:
         try:
-            path = _resolve(root, args.get("path"))
+            path = self._resolve(args.get("path"))
         except ValueError as exc:
             return ToolResult(text=f"Error: {exc}", is_error=True)
         if not path.exists():
@@ -73,30 +77,30 @@ def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
         end = start + int(limit) if isinstance(limit, int) and limit > 0 else None
         return ToolResult(text=_truncate("\n".join(lines[start:end])) or "(empty file)")
 
-    async def write_fn(args: dict[str, Any]) -> ToolResult:
+    async def write(self, args: dict[str, Any]) -> ToolResult:
         content = args.get("content")
         if not isinstance(content, str):
             return ToolResult(text="Error: content must be a string", is_error=True)
         try:
-            path = _resolve(root, args.get("path"))
+            path = self._resolve(args.get("path"))
         except ValueError as exc:
             return ToolResult(text=f"Error: {exc}", is_error=True)
-        async with _lock(path):
+        async with self._lock(path):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(content, encoding="utf-8")
         return ToolResult(text=f"Successfully wrote to {path}.")
 
-    async def edit_fn(args: dict[str, Any]) -> ToolResult:
+    async def edit(self, args: dict[str, Any]) -> ToolResult:
         edits = args.get("edits")
         if not isinstance(edits, list) or not edits:
             return ToolResult(text="Error: edits must be a non-empty list", is_error=True)
         try:
-            path = _resolve(root, args.get("path"))
+            path = self._resolve(args.get("path"))
         except ValueError as exc:
             return ToolResult(text=f"Error: {exc}", is_error=True)
         if not path.exists() or path.is_dir():
             return ToolResult(text=f"Error: file not found: {path}", is_error=True)
-        async with _lock(path):
+        async with self._lock(path):
             content = path.read_text(encoding="utf-8")
             for i, edit in enumerate(edits):
                 e: Any = edit
@@ -117,7 +121,7 @@ def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
             path.write_text(content, encoding="utf-8")
         return ToolResult(text=f"Successfully edited {path} ({len(edits)} edits).")
 
-    async def bash_fn(args: dict[str, Any]) -> ToolResult:
+    async def bash(self, args: dict[str, Any]) -> ToolResult:
         command = args.get("command")
         if not isinstance(command, str) or not command.strip():
             return ToolResult(text="Error: command must be a non-empty string", is_error=True)
@@ -127,7 +131,7 @@ def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
-                cwd=root,
+                cwd=self.root,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
@@ -146,71 +150,74 @@ def create_coding_tools(cwd: str | Path | None = None) -> list[Tool]:
             return ToolResult(text=f"{text_out}\n\n[exit {proc.returncode}]", is_error=True)
         return ToolResult(text=text_out)
 
-    return [
-        Tool(
-            name="read",
-            description="Read a UTF-8 text file. Use offset/limit for large files.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "offset": {"type": "integer"},
-                    "limit": {"type": "integer"},
+    def tools(self) -> list[Tool]:
+        return [
+            Tool(
+                name="read",
+                description="Read a UTF-8 text file. Use offset/limit for large files.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {"type": "integer"},
+                        "limit": {"type": "integer"},
+                    },
+                    "required": ["path"],
                 },
-                "required": ["path"],
-            },
-            execute_fn=read_fn,
-        ),
-        Tool(
-            name="write",
-            description="Write content to a file. Creates parents, overwrites existing.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "content": {"type": "string"},
+                execute_fn=self.read,
+            ),
+            Tool(
+                name="write",
+                description="Write content to a file. Creates parents, overwrites existing.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "content": {"type": "string"},
+                    },
+                    "required": ["path", "content"],
                 },
-                "required": ["path", "content"],
-            },
-            execute_fn=write_fn,
-        ),
-        Tool(
-            name="edit",
-            description="Exact oldText->newText replacement. Each oldText must match exactly once.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                    "edits": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "oldText": {"type": "string"},
-                                "newText": {"type": "string"},
+                execute_fn=self.write,
+            ),
+            Tool(
+                name="edit",
+                description=(
+                    "Exact oldText->newText replacement. Each oldText must match exactly once."
+                ),
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "edits": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "oldText": {"type": "string"},
+                                    "newText": {"type": "string"},
+                                },
+                                "required": ["oldText", "newText"],
                             },
-                            "required": ["oldText", "newText"],
                         },
                     },
+                    "required": ["path", "edits"],
                 },
-                "required": ["path", "edits"],
-            },
-            execute_fn=edit_fn,
-        ),
-        Tool(
-            name="bash",
-            description="Run a shell command in the working directory.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "command": {"type": "string"},
-                    "timeout": {"type": "number"},
+                execute_fn=self.edit,
+            ),
+            Tool(
+                name="bash",
+                description="Run a shell command in the working directory.",
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "command": {"type": "string"},
+                        "timeout": {"type": "number"},
+                    },
+                    "required": ["command"],
                 },
-                "required": ["command"],
-            },
-            execute_fn=bash_fn,
-        ),
-    ]
+                execute_fn=self.bash,
+            ),
+        ]
 
 
-__all__ = ["create_coding_tools"]
+__all__ = ["CodingToolkit"]

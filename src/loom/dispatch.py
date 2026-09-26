@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from loom.agent import (
+    Agent,
     AgentError,
     AssistantEnd,
     Event,
@@ -17,7 +18,6 @@ from loom.agent import (
     Tool,
     ToolEnd,
     ToolStart,
-    run_loop,
 )
 from loom.episodes import (
     CANCELLED,
@@ -63,83 +63,105 @@ def _event_to_dict(event: Event) -> dict[str, Any]:
     return {"type": "error", "message": event.message}
 
 
-async def run_dispatch(
-    *,
-    provider: str | None,
-    model: str,
-    worker_tools: Sequence[Tool],
-    store: EpisodeStore,
-    name: str,
-    action: str,
-    session: str,
-    source_threads: Sequence[str] = (),
-    working_directory: str | Path = ".",
-    timeout_secs: float = DEFAULT_TIMEOUT_SECS,
-    max_turns: int = DEFAULT_MAX_TURNS,
-    on_event: WorkerListener | None = None,
-) -> str:
-    """Run one action in a worker and return the episode it handed back.
+class Dispatcher:
+    """Runs one action in a worker and returns the episode it handed back.
+
+    Holds everything a dispatch needs (agent, worker tools, episode store,
+    session, jail, defaults, listener) so callers pass only the action.
 
     The worker only ever sees: the worker prompt, its own past as proper
     `user` (action) / `assistant` (episode) turns, the latest episode of
     each source thread as orchestrator input, and the action. Its final
     response is stored as the next episode for `name` and returned.
     """
-    if not session:
-        raise ValueError("run_dispatch requires a non-empty session.")
-    system = worker_prompt(str(working_directory))
 
-    messages: list[dict[str, Any]] = []
-    own = store.read(name, session=session)
-    messages.extend(own_history_messages(name, own))
-    for source in source_threads:
-        episode = store.latest(source, session=session)
-        if episode is None:
-            return f"Error: source thread '{source}' has no retained episode."
-        messages.append(source_message(episode))
-    messages.append({"role": "user", "content": action})
+    def __init__(
+        self,
+        *,
+        agent: Agent,
+        worker_tools: Sequence[Tool],
+        store: EpisodeStore,
+        session: str,
+        working_directory: str | Path = ".",
+        timeout_secs: float = DEFAULT_TIMEOUT_SECS,
+        max_turns: int = DEFAULT_MAX_TURNS,
+        on_event: WorkerListener | None = None,
+    ) -> None:
+        if not session:
+            raise ValueError("Dispatcher requires a non-empty session.")
+        self.agent = agent
+        self.worker_tools = worker_tools
+        self.store = store
+        self.session = session
+        self.working_directory = working_directory
+        self.timeout_secs = timeout_secs
+        self.max_turns = max_turns
+        self.on_event = on_event
 
-    final = ""
-    error = ""
-    trace: list[dict[str, Any]] = []
+    async def dispatch(
+        self,
+        *,
+        name: str,
+        action: str,
+        source_threads: Sequence[str] = (),
+        timeout_secs: float | None = None,
+    ) -> str:
+        store, session = self.store, self.session
+        system = worker_prompt(str(self.working_directory))
 
-    def _store(episode: Episode) -> None:
-        store.append(episode)
-        # ponytail: trace write is best-effort debug detail, never blocks handoff.
-        with contextlib.suppress(OSError):
-            store.append_trace(episode.id, trace)
+        messages: list[dict[str, Any]] = []
+        own = store.read(name, session=session)
+        messages.extend(own_history_messages(name, own))
+        for source in source_threads:
+            episode = store.latest(source, session=session)
+            if episode is None:
+                return f"Error: source thread '{source}' has no retained episode."
+            messages.append(source_message(episode))
+        messages.append({"role": "user", "content": action})
 
-    async def consume() -> None:
-        nonlocal final, error
-        async for event in run_loop(
-            provider=provider,
-            model=model,
-            system=system,
-            messages=messages,
-            tools=list(worker_tools),
-            max_turns=max_turns,
-        ):
-            if on_event is not None:
-                on_event(name, event)
-            trace.append(_event_to_dict(event))
-            if isinstance(event, AssistantEnd) and event.text.strip():
-                final = event.text.strip()
-            elif isinstance(event, AgentError):
-                error = event.message
+        final = ""
+        error = ""
+        trace: list[dict[str, Any]] = []
 
-    try:
-        await asyncio.wait_for(consume(), timeout=timeout_secs)
-    except TimeoutError:
-        _store(Episode(name, action, "", TIMED_OUT, session=session))
-        return f"Error: thread '{name}' timed out after {int(timeout_secs)}s."
-    except asyncio.CancelledError:
-        _store(Episode(name, action, "", CANCELLED, session=session))
-        raise
+        def _store(episode: Episode) -> None:
+            store.append(episode)
+            # ponytail: trace write is best-effort debug detail, never blocks handoff.
+            with contextlib.suppress(OSError):
+                store.append_trace(episode.id, trace)
 
-    if not final:
-        _store(Episode(name, action, "", ERROR, session=session))
-        detail = f": {error}" if error else ""
-        return f"Error: thread '{name}' produced no episode{detail}"
+        async def consume() -> None:
+            nonlocal final, error
+            async for event in self.agent.run(
+                system=system,
+                messages=messages,
+                tools=list(self.worker_tools),
+                max_turns=self.max_turns,
+            ):
+                if self.on_event is not None:
+                    self.on_event(name, event)
+                trace.append(_event_to_dict(event))
+                if isinstance(event, AssistantEnd) and event.text.strip():
+                    final = event.text.strip()
+                elif isinstance(event, AgentError):
+                    error = event.message
 
-    _store(Episode(name, action, final, OK, session=session))
-    return final
+        timeout = timeout_secs or self.timeout_secs
+        try:
+            await asyncio.wait_for(consume(), timeout=timeout)
+        except TimeoutError:
+            _store(Episode(name, action, "", TIMED_OUT, session=session))
+            return f"Error: thread '{name}' timed out after {int(timeout)}s."
+        except asyncio.CancelledError:
+            _store(Episode(name, action, "", CANCELLED, session=session))
+            raise
+
+        if not final:
+            _store(Episode(name, action, "", ERROR, session=session))
+            detail = f": {error}" if error else ""
+            return f"Error: thread '{name}' produced no episode{detail}"
+
+        _store(Episode(name, action, final, OK, session=session))
+        return final
+
+
+__all__ = ["DEFAULT_MAX_TURNS", "DEFAULT_TIMEOUT_SECS", "Dispatcher", "WorkerListener"]

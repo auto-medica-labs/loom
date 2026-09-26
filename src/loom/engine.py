@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-from loom.coding import create_coding_tools
+from loom.coding import CodingToolkit
 
 DEFAULT_MODEL = "openai:gpt-5.4"
 API_KEY_ENV = "LOOM_LLM_PROVIDER_API_KEY"
@@ -49,7 +49,7 @@ def build_engine(
     model: str | None = None,
     cwd: str | Path | None = None,
 ):
-    """Return `(provider, model, worker_tools)` for any-llm.
+    """Return `(provider, model, coding_toolkit)` for any-llm.
 
     Precedence for provider/model/credentials: flags > `LOOM_*` env >
     `~/.loom/credential.json` (written by `loom setup`) > default.
@@ -65,4 +65,4 @@ def build_engine(
             os.environ.setdefault(env, value)
     resolved_provider = provider_name or os.getenv(PROVIDER_ENV)
     resolved_model = model or os.getenv(MODEL_ENV) or DEFAULT_MODEL
-    return resolved_provider, resolved_model, create_coding_tools(cwd=cwd)
+    return resolved_provider, resolved_model, CodingToolkit(cwd)
