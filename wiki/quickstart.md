@@ -18,7 +18,7 @@ uv sync
 uv run loom "add rate limiting to the API"
 ```
 
-Requirements: Python >=3.12, `any-llm-sdk` + `rich` (see `pyproject.toml`). Entry point is `loom = "loom.cli:main"`.
+Requirements: Python >=3.12, `any-llm-sdk` (see `pyproject.toml`). Entry point is `loom = "loom.cli:main"`.
 
 Useful flags (`src/loom/cli.py:_parse_args`):
 
@@ -52,7 +52,7 @@ Precedence (flags > env > credential file > default) — see [operations](operat
 
 | path                                      | what                                                                     |
 | ----------------------------------------- | ------------------------------------------------------------------------ |
-| `src/loom/agent.py`                       | minimal any-llm loop: `Tool`, `run_loop`, 5 events                       |
+| `src/loom/agent.py`                       | minimal any-llm loop: `Tool`, `Agent`, 6 events                       |
 | `src/loom/coding.py`                      | worker tools: read/write/edit/bash (cwd-jailed)                          |
 | `src/loom/engine.py`                      | provider/model resolve + worker toolset                                  |
 | `src/loom/episodes.py`                    | `Episode` + one-file-per-episode store                                   |

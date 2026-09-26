@@ -72,7 +72,9 @@ class Dispatcher:
     The worker only ever sees: the worker prompt, its own past as proper
     `user` (action) / `assistant` (episode) turns, the latest episode of
     each source thread as orchestrator input, and the action. Its final
-    response is stored as the next episode for `name` and returned.
+    response is stored as the next episode for `name` and returned as
+    `(text, episode_id)`; `episode_id` is `None` when no episode was
+    retained (a failed dispatch).
     """
 
     def __init__(
@@ -105,7 +107,7 @@ class Dispatcher:
         action: str,
         source_threads: Sequence[str] = (),
         timeout_secs: float | None = None,
-    ) -> str:
+    ) -> tuple[str, str | None]:
         store, session = self.store, self.session
         system = worker_prompt(str(self.working_directory))
 
@@ -115,7 +117,7 @@ class Dispatcher:
         for source in source_threads:
             episode = store.latest(source, session=session)
             if episode is None:
-                return f"Error: source thread '{source}' has no retained episode."
+                return f"Error: source thread '{source}' has no retained episode.", None
             messages.append(source_message(episode))
         messages.append({"role": "user", "content": action})
 
@@ -150,18 +152,20 @@ class Dispatcher:
             await asyncio.wait_for(consume(), timeout=timeout)
         except TimeoutError:
             _store(Episode(name, action, "", TIMED_OUT, session=session))
-            return f"Error: thread '{name}' timed out after {int(timeout)}s."
+            return f"Error: thread '{name}' timed out after {int(timeout)}s.", None
         except asyncio.CancelledError:
             _store(Episode(name, action, "", CANCELLED, session=session))
             raise
 
         if not final:
-            _store(Episode(name, action, "", ERROR, session=session))
+            episode = Episode(name, action, "", ERROR, session=session)
+            _store(episode)
             detail = f": {error}" if error else ""
-            return f"Error: thread '{name}' produced no episode{detail}"
+            return f"Error: thread '{name}' produced no episode{detail}", None
 
-        _store(Episode(name, action, final, OK, session=session))
-        return final
+        episode = Episode(name, action, final, OK, session=session)
+        _store(episode)
+        return final, episode.id
 
 
 __all__ = ["DEFAULT_MAX_TURNS", "DEFAULT_TIMEOUT_SECS", "Dispatcher", "WorkerListener"]

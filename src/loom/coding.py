@@ -5,6 +5,8 @@ Text-only, cwd-jailed, truncated.
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,16 @@ from loom.agent import Tool, ToolResult
 
 MAX_BYTES = 50 * 1024
 MAX_LINES = 2_000
+
+# Secrets a worker subprocess must never inherit (names kept in sync with
+# loom.engine). Workers only need the working directory, not provider creds.
+_SECRET_ENV = frozenset(
+    {
+        "LOOM_LLM_PROVIDER_API_KEY",
+        "LOOM_LLM_PROVIDER_BASE_URL",
+        "LOOM_CREDENTIAL_FILE",
+    }
+)
 
 
 def _truncate(text: str) -> str:
@@ -128,20 +140,29 @@ class CodingToolkit:
         timeout = args.get("timeout")
         if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
             return ToolResult(text="Error: timeout must be > 0", is_error=True)
+        env = {key: value for key, value in os.environ.items() if key not in _SECRET_ENV}
         try:
             proc = await asyncio.create_subprocess_shell(
                 command,
                 cwd=self.root,
+                env=env,
                 stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 out, _ = await asyncio.wait_for(
                     proc.communicate(), timeout=float(timeout) if timeout else 120.0
                 )
             except TimeoutError:
-                proc.kill()
+                # Kill the whole process group so a timed-out command leaves no
+                # orphans, then reap it.
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    proc.kill()
+                await proc.wait()
                 return ToolResult(text="Error: command timed out", is_error=True)
         except Exception as exc:
             return ToolResult(text=f"Error: {exc}", is_error=True)

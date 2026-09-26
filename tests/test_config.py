@@ -49,31 +49,27 @@ def test_model_precedence_flag_over_env_over_file_over_default(tmp_path: Path, m
     _cred_file(tmp_path, monkeypatch)
     save_credentials({"model": "openai:from-file"})
 
-    _, model, _ = build_engine(cwd=tmp_path)
-    assert model == "openai:from-file"
+    assert build_engine(cwd=tmp_path).model == "openai:from-file"
 
     monkeypatch.setenv("LOOM_MODEL", "openai:from-env")
-    _, model, _ = build_engine(cwd=tmp_path)
-    assert model == "openai:from-env"
+    assert build_engine(cwd=tmp_path).model == "openai:from-env"
 
-    _, model, _ = build_engine(model="openai:from-flag", cwd=tmp_path)
-    assert model == "openai:from-flag"
-
-    assert os.getenv("LOOM_MODEL") == "openai:from-env"  # file never overwrites env
+    assert build_engine(model="openai:from-flag", cwd=tmp_path).model == "openai:from-flag"
 
 
 def test_provider_and_model_defaults_without_file(tmp_path: Path, monkeypatch) -> None:
     _cred_file(tmp_path, monkeypatch)
-    provider, model, _ = build_engine(cwd=tmp_path)
-    assert provider is None
-    assert model == DEFAULT_MODEL
+    cfg = build_engine(cwd=tmp_path)
+    assert cfg.provider is None
+    assert cfg.model == DEFAULT_MODEL
 
 
 def test_file_values_do_not_overwrite_process_env(tmp_path: Path, monkeypatch) -> None:
     _cred_file(tmp_path, monkeypatch)
     save_credentials({"api_key": "file-key"})
     monkeypatch.setenv("LOOM_LLM_PROVIDER_API_KEY", "env-key")
-    build_engine(cwd=tmp_path)
+    cfg = build_engine(cwd=tmp_path)
+    assert cfg.api_key == "env-key"
     assert os.getenv("LOOM_LLM_PROVIDER_API_KEY") == "env-key"
 
 

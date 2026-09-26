@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -148,6 +149,7 @@ class LoomCLI:
         self.prior_ids: list[str] = []
         self.session_id = ""
         self.pending_label = ""
+        self.failed = False
 
     def _load_context(self) -> list[dict[str, Any]]:
         """Replay prior sessions (explicit ids and/or --resume) before the prompt."""
@@ -219,20 +221,29 @@ class LoomCLI:
                 file=sys.stderr,
             )
         elif isinstance(event, AgentError):
+            self.failed = True
             print(f"!! error: {_preview(event.message, EPISODE_PREVIEW)}", file=sys.stderr)
 
-    async def run(self) -> None:
-        provider, model, coding = build_engine(
-            provider_name=self.args.provider, model=self.args.model, cwd=self.cwd
+    async def run(self) -> int:
+        started = time.monotonic()
+        engine = build_engine(provider_name=self.args.provider, model=self.args.model, cwd=self.cwd)
+        agent = Agent(
+            provider=engine.provider,
+            model=engine.model,
+            api_key=engine.api_key,
+            api_base=engine.api_base,
         )
-        agent = Agent(provider=provider, model=model)
         messages = self._load_context()
         self.session_id = _open_session(self.sessions, self.prior_ids, self.args.prompt)
+        self.sessions.log_meta(
+            self.session_id,
+            {"model": engine.model, "provider": engine.provider, "cwd": str(self.cwd)},
+        )
 
         orchestrator = Orchestrator(
             dispatcher=Dispatcher(
                 agent=agent,
-                worker_tools=coding.tools(),
+                worker_tools=engine.coding.tools(),
                 store=self.store,
                 session=self.session_id,
                 working_directory=self.cwd,
@@ -248,7 +259,13 @@ class LoomCLI:
         ):
             self._handle_event(event)
 
+        exit_code = 1 if self.failed else 0
+        self.sessions.log_meta(
+            self.session_id,
+            {"duration_s": round(time.monotonic() - started, 2), "exit": exit_code},
+        )
         print(f"\nsession: {self.sessions.path_of(self.session_id)}")
+        return exit_code
 
 
 def _redact(value: str) -> str:
@@ -288,7 +305,7 @@ def main(argv: list[str] | None = None) -> None:
         _run_setup()
         return
     args = _parse_args(argv)
-    asyncio.run(LoomCLI(args).run())
+    raise SystemExit(asyncio.run(LoomCLI(args).run()))
 
 
 if __name__ == "__main__":

@@ -6,8 +6,8 @@ Execution flow for one `uv run loom "..."` (`src/loom/cli.py:_run`):
 
 1. `build_engine()` resolves provider/model/worker tools (`src/loom/engine.py`).
 1. `SessionStore.start()` opens `<cwd>/.loom/sessions/<stamp-rand>.jsonl`; `--session` ids and `--resume` render into the first messages.
-1. `create_thread_tools(...)` builds the orchestrator's 4 tools.
-1. `run_loop(...)` with `orchestrator_prompt` runs until no more tool calls or `max_turns=32`.
+1. `Orchestrator(dispatcher=Dispatcher(...)).tools()` builds the orchestrator's 4 tools.
+1. `agent.run(...)` with `orchestrator_prompt` runs until no more tool calls or `max_turns=32`.
 1. Each tool result's per-episode `(name, text, id)` triples are logged as `episode` references in the session; plain text as `output`.
 
 ## Agent loop — `src/loom/agent.py`
@@ -15,7 +15,7 @@ Execution flow for one `uv run loom "..."` (`src/loom/cli.py:_run`):
 ReAct loop on any-llm. Key facts:
 
 - `Tool { name, description, parameters, execute_fn }`; `execute()` catches all exceptions into `ToolResult(text="Error: ...", is_error=True)` — tools are an isolation boundary.
-- `run_loop(provider, model, system, messages, tools, max_turns, api_key, api_base)` mutates `messages` in place (assistant + tool turns appended). Yields 6 events: `TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError | RetryAttempt`. Transient `acompletion` failures yield `RetryAttempt` and retry; 3 consecutive (`MAX_CONSECUTIVE_ERRORS`) become `AgentError`. CLI prints retries to stderr.
+- `Agent(provider, model, api_key, api_base).run(system, messages, tools, max_turns)` extends a local history copy (the caller's `messages` list is not mutated). Yields 6 events: `TextDelta | ToolStart | ToolEnd | AssistantEnd | AgentError | RetryAttempt`. Transient `acompletion` failures yield `RetryAttempt` and retry; 3 consecutive (`MAX_CONSECUTIVE_ERRORS`) become `AgentError`. CLI prints retries to stderr.
 - Tool calls run **sequentially** in the order the model emitted them. Malformed JSON args become `{}`; unknown tool name becomes an error result, not a crash.
 - `split_model("provider:model")` splits on the first `:`; plain ids fall back to `provider` arg or `"openai"`.
 - `AnyLLM.create(provider, api_key, api_base)` is imported lazily so tests stay cheap. Provider errors surface as `AgentError`.
@@ -23,7 +23,7 @@ ReAct loop on any-llm. Key facts:
 
 ## Worker coding tools — `src/loom/coding.py`
 
-`create_coding_tools(cwd)` returns `read / write / edit / bash`.
+`CodingToolkit(cwd).tools()` returns `read / write / edit / bash`.
 
 - **Jail:** `_resolve()` rejects any path escaping `cwd` — security, never simplify away.
 - **Truncation:** last 2000 lines or last 50KB; `read` supports `offset`/`limit`.
@@ -33,23 +33,23 @@ ReAct loop on any-llm. Key facts:
 
 ## One dispatch — `src/loom/dispatch.py`
 
-`run_dispatch(provider, model, worker_tools, store, name, action, session, source_threads, working_directory, timeout_secs=1800, max_turns=64, on_event)`:
+`Dispatcher(agent, worker_tools, store, session, working_directory, timeout_secs=1800, max_turns=64, on_event).dispatch(name, action, source_threads)` returns `(text, episode_id)` — `episode_id` is `None` for a failed dispatch:
 
 1. Builds worker messages: thread's **own past as proper `user` (action) / `assistant` (episode) turns** (`own_history_messages`, full history, verbatim) + **latest episode of each named source** as orchestrator input (`source_message`, latest only) + the action. Missing source → immediate `Error: source thread '...' has no retained episode.` with nothing stored.
-1. Runs `run_loop` with `worker_prompt` via `asyncio.wait_for(consume(), timeout)`. Last non-empty `AssistantEnd` wins as `final`.
-1. Stores one `Episode(name, action, final, status, session)`: `ok` on success; `timed_out` / `cancelled` / `error` (empty final) otherwise — and returns the text or an `Error: ...` string. Timeout message: `Error: thread '<name>' timed out after <N>s.`
+1. Runs `agent.run` with `worker_prompt` via `asyncio.wait_for(consume(), timeout)`. Last non-empty `AssistantEnd` wins as `final`.
+1. Stores one `Episode(name, action, final, status, session)`: `ok` on success; `timed_out` / `cancelled` / `error` (empty final) otherwise — and returns `(text, episode_id)`. Timeout message: `Error: thread '<name>' timed out after <N>s.`
 1. `on_event(name, event)` mirrors worker `ToolStart/ToolEnd` lines to the CLI (`    [<name>] ...`).
 
 Failure episodes are stored but **excluded from future context** (`EpisodeStore.read` filters `ok_only=True`).
 
 ## Orchestrator thread tools — `src/loom/threads.py`
 
-`create_thread_tools(provider, model, worker_tools, store, working_directory, timeout_secs, on_event, session)` returns:
+`Orchestrator(dispatcher=Dispatcher(...)).tools()` returns:
 
 | tool                                       | behavior                                                                                                                      |
 | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------- |
-| `thread(name, action, threads?, timeout?)` | one `run_dispatch`; needs `name` + `action`; rejects a second concurrent dispatch of the same name (`already running`)        |
-| `thread_batch(items[])`                    | waves of concurrent `run_dispatch` via `asyncio.gather`; dependent items wait for in-batch sources and receive their episodes |
+| `thread(name, action, threads?, timeout?)` | one `Dispatcher.dispatch`; needs `name` + `action`; rejects a second concurrent dispatch of the same name (`already running`)        |
+| `thread_batch(items[])`                    | waves of concurrent `Dispatcher.dispatch` via `asyncio.gather`; dependent items wait for in-batch sources and receive their episodes |
 | `threads()`                                | `Active threads:\n- <name> \| <n> episodes` or `No active threads in this session.`                                           |
 | `thread_read(name)`                        | full retained history via `render_thread_document`                                                                            |
 
@@ -61,7 +61,7 @@ Failure episodes are stored but **excluded from future context** (`EpisodeStore.
 
 `Episode { thread, action, content, status=ok, created_at, id (12 hex), session }`. `content` is the worker's final response verbatim.
 
-`EpisodeStore(path)`: one file per episode at `<dir>/<id>.jsonl`. API: `append` (collision-safe), `read(thread, session)` (ok-only), `latest(thread, session)`, `names(session)`, `count(thread, session)`, `get(id)`, `by_session(id)` (failures included). `read`/`latest`/`names`/`count` and `Episode(session=...)` / `run_dispatch(session=...)` / `create_thread_tools(session=...)` all require a non-empty session (`ValueError` otherwise) — threads never leak across sessions. Ordering is by `(mtime_ns, name)`. Corrupt lines are skipped.
+`EpisodeStore(path)`: one file per episode at `<dir>/<id>.jsonl`. API: `append` (collision-safe), `read(thread, session)` (ok-only), `latest(thread, session)`, `names(session)`, `count(thread, session)`, `get(id)`, `by_session(id)` (failures included). `read`/`latest`/`names`/`count` and `Episode(session=...)` / `Dispatcher(session=...)` / `Orchestrator(dispatcher=Dispatcher(session=...))` all require a non-empty session (`ValueError` otherwise) — threads never leak across sessions. Ordering is by `(mtime_ns, name)`. Corrupt lines are skipped.
 
 Debug-only traces: every dispatch stores its minute interaction via `append_trace` at `<id>.trace.jsonl` (`read_trace` reads it back). Traces are never injected into worker context.
 
@@ -74,6 +74,7 @@ Orchestrator-side transcript; episodes keep worker results, sessions keep the or
 - `{"type":"input","text"}` — prompt (incl. each `--session` / `--resume` follow-up)
 - `{"type":"output","text","label"?}` — orchestrator text (`label` = dispatch label for tool outputs)
 - `{"type":"episode","label","id"}` — **reference only**, no content (`messages(sid, store)` resolves refs into `role: tool` messages with the episode content)
+- `{"type":"meta",...}` — run metadata (`model`, `provider`, `cwd`, `duration_s`, `exit`); written by the CLI and skipped on replay
 
 `messages()` replays native OpenAI turns (user/assistant/tool, verbatim, no headers); episode refs pair via `tool_call_id` and batch refs sharing one call merge into a single tool message. Skips corrupt lines and refs without `tool_call_id`; unknown id returns `None`. `SessionStore.start()` ids look like `20260909-035154-562836`.
 

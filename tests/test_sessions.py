@@ -256,3 +256,48 @@ def test_messages_missing_session_returns_none(tmp_path: Path) -> None:
     from loom.sessions import SessionStore
 
     assert SessionStore(tmp_path / "sessions").messages("nope") is None
+
+
+def test_meta_lines_are_recorded_and_skipped_on_replay(tmp_path: Path) -> None:
+    import json
+
+    from loom.sessions import SessionStore
+
+    sessions = SessionStore(tmp_path / "sessions")
+    sid = sessions.start("go")
+    sessions.log_meta(sid, {"model": "openai:gpt-5.4", "duration_s": 1.5})
+    sessions.log_output(sid, "done")
+
+    assert sessions.messages(sid) == [
+        {"role": "user", "content": "go"},
+        {"role": "assistant", "content": "done"},
+    ]
+    records = [
+        json.loads(line) for line in sessions.path_of(sid).read_text(encoding="utf-8").splitlines()
+    ]
+    assert {"type": "meta", "model": "openai:gpt-5.4", "duration_s": 1.5} in records
+
+
+def test_messages_merges_mixed_success_and_failure_batch(tmp_path: Path) -> None:
+    from loom.episodes import Episode, EpisodeStore
+    from loom.sessions import SessionStore
+
+    episodes = EpisodeStore(tmp_path / "episodes")
+    ok_a = Episode("a", "one", "a result", session="s1")
+    ok_c = Episode("c", "three", "c result", session="s1")
+    episodes.append(ok_a)
+    episodes.append(ok_c)
+
+    sessions = SessionStore(tmp_path / "sessions")
+    sid = sessions.start("go")
+    sessions.log_assistant(sid, "", [{"id": "call_b", "name": "thread_batch", "arguments": {}}])
+    sessions.log_episode_ref(sid, "a", ok_a.id, tool_call_id="call_b")
+    sessions.log_tool(sid, "b", "Error: thread 'b' produced no episode", "call_b")
+    sessions.log_episode_ref(sid, "c", ok_c.id, tool_call_id="call_b")
+
+    replayed = sessions.messages(sid, episodes)
+    assert replayed is not None
+    tools = [m for m in replayed if m.get("role") == "tool"]
+    assert len(tools) == 1
+    assert tools[0]["tool_call_id"] == "call_b"
+    assert tools[0]["content"] == "a result\n\nError: thread 'b' produced no episode\n\nc result"

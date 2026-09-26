@@ -4,7 +4,7 @@ version = "0.2.0"
 description = "Thread-and-episode orchestration on its own any-llm engine."
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["any-llm-sdk", "rich>=13.0"]
+dependencies = ["any-llm-sdk"]
 
 [project.scripts]
 loom = "loom.cli:main"

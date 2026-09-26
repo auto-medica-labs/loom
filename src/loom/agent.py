@@ -104,8 +104,8 @@ class Agent:
 
     Provider/model/credentials are captured once; `run` yields the event
     stream the CLI and dispatcher consume. `messages` uses OpenAI dict format
-    and is mutated in place (assistant + tool turns appended) so callers can
-    inspect history; the final assistant text arrives as AssistantEnd per
+    and is extended on a local copy — the caller's list is not mutated. The
+    final assistant text arrives as AssistantEnd per
     turn, AgentError after consecutive turn errors (`MAX_CONSECUTIVE_ERRORS`)
     or max_turns.
     """

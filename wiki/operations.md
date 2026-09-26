@@ -36,16 +36,16 @@ uv run ruff check .  # line-length 100, target py312; prompts.py exempt from E50
 uv run ty check   # `ty` is the type checker
 ```
 
-`tests/test_dispatch.py` defines the reusable pattern: a scripted `FakeLLM` (`text` or `{tool_calls:[...]}` items) monkeypatched over `any_llm.AnyLLM.create`, then `asyncio.run(run_dispatch(...))` or `batch.execute({...})` against an `EpisodeStore` in `tmp_path`. Timing-sensitive test: `test_batch_runs_independent_items_concurrently` asserts elapsed < 0.09s for two 0.05s sleeps.
+`tests/test_dispatch.py` defines the reusable pattern: a scripted `FakeLLM` (`text` or `{tool_calls:[...]}` items) monkeypatched over `any_llm.AnyLLM.create`, then `asyncio.run(dispatcher(episodes).dispatch(...))` or `batch.execute({...})` against an `EpisodeStore` in `tmp_path`. Timing-sensitive test: `test_batch_runs_independent_items_concurrently` asserts elapsed < 0.09s for two 0.05s sleeps.
 
 ## Where to change code
 
 | want                  | touch                                                                                 | watch for                                                            |
 | --------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| new worker capability | `src/loom/coding.py:create_coding_tools` + `src/loom/engine.py:build_engine`          | keep cwd jail; `edit` exact-once matching; truncation limits         |
-| new orchestrator tool | `src/loom/threads.py:create_thread_tools` + prompt tool list in `src/loom/prompts.py` | `details.episodes` shape `cli.py:_episode_entries` parses            |
-| loop semantics        | `src/loom/agent.py:run_loop`                                                          | sequential calls; `messages` mutated in place; lazy `any_llm` import |
-| context shaping       | `src/loom/dispatch.py:run_dispatch`, renderers in `src/loom/episodes.py`              | ok-only filtering; latest-only sources                               |
+| new worker capability | `src/loom/coding.py:CodingToolkit` + `src/loom/engine.py:build_engine`          | keep cwd jail; `edit` exact-once matching; truncation limits         |
+| new orchestrator tool | `src/loom/threads.py:Orchestrator` + prompt tool list in `src/loom/prompts.py` | `details.episodes` shape `cli.py:_episode_entries` parses            |
+| loop semantics        | `src/loom/agent.py:Agent.run`                                                          | sequential calls; caller's `messages` not mutated; lazy `any_llm` import |
+| context shaping       | `src/loom/dispatch.py:Dispatcher.dispatch`, renderers in `src/loom/episodes.py`              | ok-only filtering; latest-only sources                               |
 | CLI/output            | `src/loom/cli.py`                                                                     | `_preview` truncation, `<< name (N chars)` lines, `session:` footer  |
 | provider/config       | `src/loom/engine.py`                                                                  | setdefault ordering; `LOOM_CREDENTIAL_FILE` override                 |
 

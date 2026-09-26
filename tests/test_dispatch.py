@@ -98,7 +98,7 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: Fake
     use_script(patch_llm, ["wrote parser, tests pass"])
     episodes = store(tmp_path)
 
-    answer = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="write the parser"))
+    answer, _ = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="write the parser"))
 
     assert answer == "wrote parser, tests pass"
     assert [e.content for e in episodes.read("impl", SID)] == ["wrote parser, tests pass"]
@@ -161,10 +161,11 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm
 
 def test_missing_source_thread_is_reported(tmp_path: Path, patch_llm: FakeLLM) -> None:
     episodes = store(tmp_path)
-    answer = asyncio.run(
+    answer, episode_id = asyncio.run(
         dispatcher(episodes).dispatch(name="impl", action="build", source_threads=["nope"])
     )
     assert "no retained episode" in answer
+    assert episode_id is None
     assert episodes.read("impl", SID) == []
 
 
@@ -388,8 +389,9 @@ def test_malformed_response_stores_error_episode_not_crash(
 ) -> None:
     use_script(patch_llm, [{"empty_choices": True}] * 5)
     episodes = store(tmp_path)
-    answer = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="build"))
+    answer, episode_id = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="build"))
     assert answer.startswith("Error: thread 'impl' produced no episode")
+    assert episode_id is None
     persisted = episodes.by_session(SID)
     assert len(persisted) == 1 and persisted[0].status == "error"
     assert episodes.read_trace(persisted[0].id) != []

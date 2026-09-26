@@ -8,7 +8,7 @@ from typing import Any
 
 from loom.agent import Tool, ToolResult
 from loom.dispatch import Dispatcher
-from loom.episodes import EpisodeStore, render_thread_document
+from loom.episodes import render_thread_document
 
 
 def _result(text: str) -> ToolResult:
@@ -26,14 +26,6 @@ def _with_episodes(text: str, episodes: Sequence[tuple[str, str, str | None]]) -
             ]
         },
     )
-
-
-def _stored_id(store: EpisodeStore, name: str, text: str, session: str) -> str | None:
-    """Id of the episode just stored, or None for failed dispatches."""
-    if text.startswith("Error:"):
-        return None
-    latest = store.latest(name, session=session)
-    return latest.id if latest is not None and latest.content == text else None
 
 
 def _text(arguments: Mapping[Any, Any], key: str) -> str:
@@ -124,7 +116,7 @@ class Orchestrator:
 
         self._active.add(name)
         try:
-            episode = await self.dispatcher.dispatch(
+            episode, episode_id = await self.dispatcher.dispatch(
                 name=name,
                 action=action,
                 source_threads=_string_list(args, "threads"),
@@ -132,9 +124,7 @@ class Orchestrator:
             )
         finally:
             self._active.discard(name)
-        return _with_episodes(
-            episode, [(name, episode, _stored_id(self.store, name, episode, self.session))]
-        )
+        return _with_episodes(episode, [(name, episode, episode_id)])
 
     async def dispatch_batch(self, args: dict[str, Any]) -> ToolResult:
         items = args.get("items")
@@ -168,6 +158,7 @@ class Orchestrator:
             )
 
         results: dict[int, str] = {}
+        ids: dict[int, str | None] = {}
         failed: set[int] = set()
         self._active.update(names)
         try:
@@ -180,6 +171,7 @@ class Orchestrator:
                             f"Error: source thread '{dead}' failed; "
                             f"dispatch '{names[index]}' skipped."
                         )
+                        ids[index] = None
                         failed.add(index)
                     else:
                         runnable.append(index)
@@ -200,19 +192,17 @@ class Orchestrator:
                 for index, outcome in zip(runnable, outcomes, strict=True):
                     if isinstance(outcome, BaseException):
                         results[index] = f"Error: thread '{names[index]}' failed: {outcome}"
+                        ids[index] = None
                         failed.add(index)
                     else:
-                        results[index] = outcome
-                        if outcome.startswith("Error:"):
+                        results[index], ids[index] = outcome
+                        if results[index].startswith("Error:"):
                             failed.add(index)
         finally:
             self._active.difference_update(names)
 
         body = "\n".join(f"== {names[i]} ==\n{results[i]}" for i in range(len(names)))
-        entries = [
-            (names[i], results[i], _stored_id(self.store, names[i], results[i], self.session))
-            for i in range(len(names))
-        ]
+        entries = [(names[i], results[i], ids[i]) for i in range(len(names))]
         return _with_episodes(body, entries)
 
     async def list_threads(self, args: dict[str, Any]) -> ToolResult:
