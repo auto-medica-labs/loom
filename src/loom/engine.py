@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
-from loom.coding import create_coding_tools
+from loom.coding import CodingToolkit
 
 DEFAULT_MODEL = "openai:gpt-5.4"
 API_KEY_ENV = "LOOM_LLM_PROVIDER_API_KEY"
@@ -43,26 +44,38 @@ def save_credentials(data: dict[str, str]) -> Path:
     return path
 
 
+@dataclass(frozen=True, slots=True)
+class EngineConfig:
+    """Resolved provider/model/credentials plus the worker toolkit."""
+
+    provider: str | None
+    model: str
+    api_key: str | None
+    api_base: str | None
+    coding: CodingToolkit
+
+
 def build_engine(
     *,
     provider_name: str | None = None,
     model: str | None = None,
     cwd: str | Path | None = None,
-):
-    """Return `(provider, model, worker_tools)` for any-llm.
+) -> EngineConfig:
+    """Resolve provider/model/credentials for any-llm.
 
-    Precedence for provider/model/credentials: flags > `LOOM_*` env >
-    `~/.loom/credential.json` (written by `loom setup`) > default.
+    Precedence: flags > `LOOM_*` env > `~/.loom/credential.json` > default.
+    Returns explicit values rather than mutating `os.environ`, so a credential
+    file's API key never leaks into worker subprocesses via the environment.
     """
     creds = load_credentials()
-    for key, env in (
-        ("api_key", API_KEY_ENV),
-        ("base_url", BASE_URL_ENV),
-        ("model", MODEL_ENV),
-        ("provider", PROVIDER_ENV),
-    ):
-        if value := creds.get(key):
-            os.environ.setdefault(env, value)
-    resolved_provider = provider_name or os.getenv(PROVIDER_ENV)
-    resolved_model = model or os.getenv(MODEL_ENV) or DEFAULT_MODEL
-    return resolved_provider, resolved_model, create_coding_tools(cwd=cwd)
+    api_key = os.getenv(API_KEY_ENV) or creds.get("api_key")
+    api_base = os.getenv(BASE_URL_ENV) or creds.get("base_url")
+    resolved_provider = provider_name or os.getenv(PROVIDER_ENV) or creds.get("provider")
+    resolved_model = model or os.getenv(MODEL_ENV) or creds.get("model") or DEFAULT_MODEL
+    return EngineConfig(
+        provider=resolved_provider,
+        model=resolved_model,
+        api_key=api_key,
+        api_base=api_base,
+        coding=CodingToolkit(cwd),
+    )

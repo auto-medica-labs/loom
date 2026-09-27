@@ -8,26 +8,27 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 from collections.abc import Mapping
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
 
 from loom.agent import (
+    Agent,
     AgentError,
     AssistantEnd,
     RetryAttempt,
     TextDelta,
-    Tool,
     ToolEnd,
     ToolStart,
-    run_loop,
 )
+from loom.dispatch import Dispatcher
 from loom.engine import build_engine, credential_path, load_credentials, save_credentials
 from loom.episodes import EpisodeStore
 from loom.prompts import orchestrator_prompt
 from loom.sessions import SessionStore
-from loom.threads import create_thread_tools
+from loom.threads import Orchestrator
 
 
 def _get_version() -> str:
@@ -137,32 +138,40 @@ def _episode_entries(result: Any) -> list[tuple[str, str, str | None]] | None:
     return entries
 
 
-async def _run(args: argparse.Namespace) -> None:
-    cwd = Path(args.cwd).resolve()
-    store = EpisodeStore(args.store or cwd / ".loom" / "episodes")
-    provider, model, worker_tools = build_engine(
-        provider_name=args.provider, model=args.model, cwd=cwd
-    )
-    sessions = SessionStore(cwd / ".loom" / "sessions")
+class LoomCLI:
+    """One `loom "<prompt>"` run: wiring, event printing, session logging."""
 
-    messages: list[dict[str, Any]] = []
-    prior_ids = list(args.session)
-    if args.resume:
-        ids = sessions.ids()
-        if not ids:
-            print("warning: no sessions found", file=sys.stderr)
-        else:
-            prior_ids.insert(0, ids[-1])
-    for prior in prior_ids:
-        prior_messages = sessions.messages(prior, store)
-        if prior_messages is None:
-            print(f"warning: session '{prior}' not found", file=sys.stderr)
-        else:
-            messages.extend(prior_messages)
-    messages.append({"role": "user", "content": args.prompt})
-    session_id = _open_session(sessions, prior_ids, args.prompt)
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+        self.cwd = Path(args.cwd).resolve()
+        self.store = EpisodeStore(args.store or self.cwd / ".loom" / "episodes")
+        self.sessions = SessionStore(self.cwd / ".loom" / "sessions")
+        self.prior_ids: list[str] = []
+        self.session_id = ""
+        self.pending_label = ""
+        self.failed = False
 
-    def on_worker_event(name: str, event: object) -> None:
+    def _load_context(self) -> list[dict[str, Any]]:
+        """Replay prior sessions (explicit ids and/or --resume) before the prompt."""
+        messages: list[dict[str, Any]] = []
+        prior_ids = list(self.args.session)
+        if self.args.resume:
+            ids = self.sessions.ids()
+            if not ids:
+                print("warning: no sessions found", file=sys.stderr)
+            else:
+                prior_ids.insert(0, ids[-1])
+        for prior in prior_ids:
+            prior_messages = self.sessions.messages(prior, self.store)
+            if prior_messages is None:
+                print(f"warning: session '{prior}' not found", file=sys.stderr)
+            else:
+                messages.extend(prior_messages)
+        messages.append({"role": "user", "content": self.args.prompt})
+        self.prior_ids = prior_ids
+        return messages
+
+    def _on_worker_event(self, name: str, event: object) -> None:
         if isinstance(event, ToolStart):
             print(f"    [{name}] {event.tool_name} {_preview(str(event.args))}")
         elif isinstance(event, ToolEnd):
@@ -177,48 +186,33 @@ async def _run(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
 
-    tools: list[Tool] = create_thread_tools(
-        provider=provider,
-        model=model,
-        worker_tools=worker_tools,
-        store=store,
-        working_directory=cwd,
-        on_event=on_worker_event,
-        session=session_id,
-    )
-
-    pending_label = ""
-    async for event in run_loop(
-        provider=provider,
-        model=model,
-        system=orchestrator_prompt(str(cwd)),
-        messages=messages,
-        tools=tools,
-        max_turns=args.max_turns,
-    ):
-        if isinstance(event, ToolStart):
-            pending_label = _dispatch_label(event.args)
-            print(f"\n>> {pending_label}")
-        elif isinstance(event, ToolEnd):
-            entries = _episode_entries(event.result)
-            if entries is None:
-                sessions.log_tool(session_id, pending_label, event.result.text, event.call_id)
+    def _log_tool_result(self, result: Any, call_id: str) -> None:
+        entries = _episode_entries(result)
+        if entries is None:
+            self.sessions.log_tool(self.session_id, self.pending_label, result.text, call_id)
+            return
+        for name, text, episode_id in entries:
+            if episode_id:
+                self.sessions.log_episode_ref(
+                    self.session_id, name, episode_id, tool_call_id=call_id
+                )
             else:
-                for name, text, episode_id in entries:
-                    if episode_id:
-                        sessions.log_episode_ref(
-                            session_id, name, episode_id, tool_call_id=event.call_id
-                        )
-                    else:
-                        sessions.log_tool(session_id, name, text, event.call_id)
+                self.sessions.log_tool(self.session_id, name, text, call_id)
+
+    def _handle_event(self, event: object) -> None:
+        if isinstance(event, ToolStart):
+            self.pending_label = _dispatch_label(event.args)
+            print(f"\n>> {self.pending_label}")
+        elif isinstance(event, ToolEnd):
+            self._log_tool_result(event.result, event.call_id)
             for line in _episode_lines(event.result):
                 print(line)
             print()
         elif isinstance(event, AssistantEnd):
             if event.tool_calls:
-                sessions.log_assistant(session_id, event.text.strip(), event.tool_calls)
+                self.sessions.log_assistant(self.session_id, event.text.strip(), event.tool_calls)
             elif event.text.strip():
-                sessions.log_output(session_id, event.text.strip())
+                self.sessions.log_output(self.session_id, event.text.strip())
         elif isinstance(event, TextDelta):
             print(event.delta, end="", flush=True)
         elif isinstance(event, RetryAttempt):
@@ -227,9 +221,51 @@ async def _run(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
         elif isinstance(event, AgentError):
+            self.failed = True
             print(f"!! error: {_preview(event.message, EPISODE_PREVIEW)}", file=sys.stderr)
 
-    print(f"\nsession: {sessions.path_of(session_id)}")
+    async def run(self) -> int:
+        started = time.monotonic()
+        engine = build_engine(provider_name=self.args.provider, model=self.args.model, cwd=self.cwd)
+        agent = Agent(
+            provider=engine.provider,
+            model=engine.model,
+            api_key=engine.api_key,
+            api_base=engine.api_base,
+        )
+        messages = self._load_context()
+        self.session_id = _open_session(self.sessions, self.prior_ids, self.args.prompt)
+        self.sessions.log_meta(
+            self.session_id,
+            {"model": engine.model, "provider": engine.provider, "cwd": str(self.cwd)},
+        )
+
+        orchestrator = Orchestrator(
+            dispatcher=Dispatcher(
+                agent=agent,
+                worker_tools=engine.coding.tools(),
+                store=self.store,
+                session=self.session_id,
+                working_directory=self.cwd,
+                on_event=self._on_worker_event,
+            )
+        )
+
+        async for event in agent.run(
+            system=orchestrator_prompt(str(self.cwd)),
+            messages=messages,
+            tools=orchestrator.tools(),
+            max_turns=self.args.max_turns,
+        ):
+            self._handle_event(event)
+
+        exit_code = 1 if self.failed else 0
+        self.sessions.log_meta(
+            self.session_id,
+            {"duration_s": round(time.monotonic() - started, 2), "exit": exit_code},
+        )
+        print(f"\nsession: {self.sessions.path_of(self.session_id)}")
+        return exit_code
 
 
 def _redact(value: str) -> str:
@@ -269,7 +305,7 @@ def main(argv: list[str] | None = None) -> None:
         _run_setup()
         return
     args = _parse_args(argv)
-    asyncio.run(_run(args))
+    raise SystemExit(asyncio.run(LoomCLI(args).run()))
 
 
 if __name__ == "__main__":

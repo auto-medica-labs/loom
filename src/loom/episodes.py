@@ -184,10 +184,7 @@ def source_message(episode: Episode) -> dict[str, Any]:
 
 def render_source_context(episode: Episode) -> str:
     """Latest episode of another thread, injected as input for this dispatch."""
-    return (
-        f'Thread: "{episode.thread}" '
-        f"\n\n{episode.content}"
-    )
+    return f'Thread: "{episode.thread}" \n\n{episode.content}'
 
 
 def render_thread_document(thread: str, episodes: list[Episode]) -> str:

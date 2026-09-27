@@ -6,6 +6,7 @@ file per run in `<cwd>/.loom/sessions/`, one line per turn in order:
     {"type": "input", "text": "<prompt>"}
     {"type": "output", "text": "<orchestrator text>"}
     {"type": "episode", "label": "<thread>", "id": "<episode id>"}
+    {"type": "meta", "model": ..., "provider": ..., "duration_s": ...}  # run metadata
 
 Episode lines are references: content lives once in the episode store
 (`render(..., store)` resolves them). `text` stays pure user/LLM content.
@@ -30,6 +31,7 @@ OUTPUT = "output"
 EPISODE = "episode"
 ASSISTANT = "assistant"
 TOOL = "tool"
+META = "meta"
 
 
 class SessionStore:
@@ -89,6 +91,10 @@ class SessionStore:
             {"type": TOOL, "label": label, "text": text, "tool_call_id": tool_call_id},
         )
 
+    def log_meta(self, session_id: str, record: dict[str, Any]) -> None:
+        """Run metadata (model, provider, duration, exit). Skipped on replay."""
+        self._append(session_id, {"type": META, **record})
+
     def messages(
         self, session_id: str, store: EpisodeStore | None = None
     ) -> list[dict[str, Any]] | None:
@@ -99,10 +105,10 @@ class SessionStore:
         Stored text replays verbatim: no headers or labels are added.
         Episode refs always carry tool_call_id (no legacy files — delete
         .loom when upgrading); a ref without one cannot pair with its
-        assistant turn and is skipped. Consecutive episode refs sharing one call
-        (a thread_batch turn) merge into a single tool message, joined by a
-        blank line. A trailing assistant turn with unsatisfied tool_calls
-        (crashed run) is trimmed.
+        assistant turn and is skipped. Results sharing one call (a thread_batch
+        turn) — episode refs and inline tool errors alike — merge into a single
+        tool message, joined by a blank line. A trailing assistant turn with
+        unsatisfied tool_calls (crashed run) is trimmed.
         """
         path = self.path_of(session_id)
         if not path.exists():
@@ -133,12 +139,21 @@ class SessionStore:
                 continue
             if not isinstance(record, dict):
                 continue
-            if record.get("type") == EPISODE and record.get("tool_call_id"):
+            if record.get("type") in (EPISODE, TOOL) and record.get("tool_call_id"):
+                # One assistant tool_call (e.g. a batch) can fan out to many
+                # results. Group every part sharing a call id into a single tool
+                # message — a mix of episode refs and inline errors must not
+                # split into several messages for the same call.
                 cid = str(record["tool_call_id"])
                 if pending_cid is not None and cid != pending_cid:
                     flush_pending()
                 pending_cid = cid
-                pending_parts.append((_episode_label(record), _episode_content(record, store)))
+                if record.get("type") == EPISODE:
+                    pending_parts.append((_episode_label(record), _episode_content(record, store)))
+                else:
+                    pending_parts.append(
+                        (str(record.get("label", "")), str(record.get("text", "")))
+                    )
                 continue
             flush_pending()
             message = _record_to_message(record, store)

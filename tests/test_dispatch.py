@@ -12,10 +12,10 @@ from typing import Any
 import any_llm
 import pytest
 
-from loom.agent import Tool, ToolResult
-from loom.dispatch import run_dispatch
+from loom.agent import Agent, Tool, ToolResult
+from loom.dispatch import Dispatcher
 from loom.episodes import EpisodeStore
-from loom.threads import create_thread_tools, plan_waves
+from loom.threads import Orchestrator, plan_waves
 
 MODEL = "fake:model"
 SID = "test-session"
@@ -71,6 +71,25 @@ def store(tmp_path: Path) -> EpisodeStore:
     return EpisodeStore(tmp_path / "episodes")
 
 
+def dispatcher(episodes: EpisodeStore, *, worker_tools: Any = (), session: str = SID) -> Dispatcher:
+    return Dispatcher(
+        agent=Agent(provider="fake", model=MODEL),
+        worker_tools=worker_tools,
+        store=episodes,
+        session=session,
+    )
+
+
+def orchestrator(
+    episodes: EpisodeStore, *, worker_tools: Any = (), session: str = SID
+) -> Orchestrator:
+    return Orchestrator(dispatcher=dispatcher(episodes, worker_tools=worker_tools, session=session))
+
+
+def tool_named(orch: Orchestrator, name: str) -> Tool:
+    return next(t for t in orch.tools() if t.name == name)
+
+
 def user_text(messages: list[dict[str, Any]]) -> str:
     return " ".join(m.get("content", "") for m in messages if m.get("role") == "user")
 
@@ -79,17 +98,7 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: Fake
     use_script(patch_llm, ["wrote parser, tests pass"])
     episodes = store(tmp_path)
 
-    answer = asyncio.run(
-        run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="write the parser",
-            session=SID,
-        )
-    )
+    answer, _ = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="write the parser"))
 
     assert answer == "wrote parser, tests pass"
     assert [e.content for e in episodes.read("impl", SID)] == ["wrote parser, tests pass"]
@@ -98,47 +107,23 @@ def test_dispatch_returns_and_stores_the_episode(tmp_path: Path, patch_llm: Fake
 def test_dispatch_stamps_the_session_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["done"])
     episodes = store(tmp_path)
+    session = "20260909-000000-abc123"
 
-    asyncio.run(
-        run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="build",
-            session="20260909-000000-abc123",
-        )
-    )
+    asyncio.run(dispatcher(episodes, session=session).dispatch(name="impl", action="build"))
 
-    assert episodes.read("impl", "20260909-000000-abc123")[0].session == "20260909-000000-abc123"
-    assert [e.thread for e in episodes.by_session("20260909-000000-abc123")] == ["impl"]
+    assert episodes.read("impl", session)[0].session == session
+    assert [e.thread for e in episodes.by_session(session)] == ["impl"]
     assert episodes.by_session("other") == []
 
 
 def test_reused_thread_sees_its_own_history(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["first pass", "second pass"])
     episodes = store(tmp_path)
+    dispatch = dispatcher(episodes)
 
     async def scenario() -> None:
-        await run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="start",
-            session=SID,
-        )
-        await run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="continue",
-            session=SID,
-        )
+        await dispatch.dispatch(name="impl", action="start")
+        await dispatch.dispatch(name="impl", action="continue")
 
     asyncio.run(scenario())
     turns = [m for m in patch_llm.calls[1] if m.get("role") != "system"]
@@ -154,53 +139,19 @@ def test_reused_thread_history_is_verbatim_without_headers(
 ) -> None:
     use_script(patch_llm, ["first pass"])
     episodes = store(tmp_path)
-    asyncio.run(
-        run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="start",
-            session=SID,
-        )
-    )
+    asyncio.run(dispatcher(episodes).dispatch(name="impl", action="start"))
     assert [m.get("content") for m in patch_llm.calls[0] if m.get("role") != "system"] == ["start"]
 
 
 def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["research v1", "research v2", "done"])
     episodes = store(tmp_path)
+    dispatch = dispatcher(episodes)
 
     async def scenario() -> None:
-        await run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="research",
-            action="look",
-            session=SID,
-        )
-        await run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="research",
-            action="look again",
-            session=SID,
-        )
-        await run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="build",
-            source_threads=["research"],
-            session=SID,
-        )
+        await dispatch.dispatch(name="research", action="look")
+        await dispatch.dispatch(name="research", action="look again")
+        await dispatch.dispatch(name="impl", action="build", source_threads=["research"])
 
     asyncio.run(scenario())
     injected = user_text(patch_llm.calls[2])
@@ -210,19 +161,11 @@ def test_source_thread_injects_only_its_latest_episode(tmp_path: Path, patch_llm
 
 def test_missing_source_thread_is_reported(tmp_path: Path, patch_llm: FakeLLM) -> None:
     episodes = store(tmp_path)
-    answer = asyncio.run(
-        run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="build",
-            source_threads=["nope"],
-            session=SID,
-        )
+    answer, episode_id = asyncio.run(
+        dispatcher(episodes).dispatch(name="impl", action="build", source_threads=["nope"])
     )
     assert "no retained episode" in answer
+    assert episode_id is None
     assert episodes.read("impl", SID) == []
 
 
@@ -279,10 +222,7 @@ def test_batch_runs_independent_items_concurrently(tmp_path: Path, patch_llm: Fa
         ],
     )
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes, session=SID
-    )
-    batch = next(t for t in tools if t.name == "thread_batch")
+    batch = tool_named(orchestrator(episodes, worker_tools=[wait_tool()]), "thread_batch")
 
     async def scenario() -> tuple[float, str]:
         start = time.monotonic()
@@ -301,10 +241,7 @@ def test_batch_runs_independent_items_concurrently(tmp_path: Path, patch_llm: Fa
 def test_batch_dependent_item_sees_its_sources(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done", "b done", "synth done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    batch = next(t for t in tools if t.name == "thread_batch")
+    batch = tool_named(orchestrator(episodes), "thread_batch")
 
     async def scenario() -> ToolResult:
         return await batch.execute(
@@ -329,10 +266,7 @@ def test_batch_dependent_item_sees_its_sources(tmp_path: Path, patch_llm: FakeLL
 def test_batch_skips_dependent_when_source_fails(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    batch = next(t for t in tools if t.name == "thread_batch")
+    batch = tool_named(orchestrator(episodes), "thread_batch")
 
     async def scenario() -> ToolResult:
         return await batch.execute(
@@ -357,10 +291,7 @@ def test_batch_rejects_duplicate_names_before_dispatching(
     tmp_path: Path, patch_llm: FakeLLM
 ) -> None:
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    batch = next(t for t in tools if t.name == "thread_batch")
+    batch = tool_named(orchestrator(episodes), "thread_batch")
     text = asyncio.run(
         batch.execute({"items": [{"name": "a", "action": "one"}, {"name": "a", "action": "two"}]})
     ).text
@@ -371,10 +302,7 @@ def test_batch_rejects_duplicate_names_before_dispatching(
 def test_thread_result_carries_the_stored_episode_id(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    thread = next(t for t in tools if t.name == "thread")
+    thread = tool_named(orchestrator(episodes), "thread")
     result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
     stored = episodes.read("impl", SID)[0]
     assert _episodes(result)[0]["id"] == stored.id
@@ -383,10 +311,7 @@ def test_thread_result_carries_the_stored_episode_id(tmp_path: Path, patch_llm: 
 def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a done"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    thread = next(t for t in tools if t.name == "thread")
+    thread = tool_named(orchestrator(episodes), "thread")
     result = asyncio.run(thread.execute({"name": "impl", "action": "one"}))
     assert [e["name"] for e in _episodes(result)] == ["impl"]
     assert _episodes(result)[0]["text"] == "a done"
@@ -395,11 +320,9 @@ def test_thread_result_carries_its_single_episode(tmp_path: Path, patch_llm: Fak
 def test_threads_tool_lists_threads_and_counts(tmp_path: Path, patch_llm: FakeLLM) -> None:
     use_script(patch_llm, ["a", "b"])
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[], store=episodes, session=SID
-    )
-    thread = next(t for t in tools if t.name == "thread")
-    listing = next(t for t in tools if t.name == "threads")
+    orch = orchestrator(episodes)
+    thread = tool_named(orch, "thread")
+    listing = tool_named(orch, "threads")
 
     async def scenario() -> str:
         await thread.execute({"name": "impl", "action": "one"})
@@ -421,10 +344,7 @@ def test_thread_tool_rejects_a_second_concurrent_dispatch(
         ],
     )
     episodes = store(tmp_path)
-    tools = create_thread_tools(
-        provider="fake", model=MODEL, worker_tools=[wait_tool()], store=episodes, session=SID
-    )
-    thread = next(t for t in tools if t.name == "thread")
+    thread = tool_named(orchestrator(episodes, worker_tools=[wait_tool()]), "thread")
 
     async def scenario() -> str:
         first = asyncio.create_task(thread.execute({"name": "impl", "action": "one"}))
@@ -437,17 +357,11 @@ def test_thread_tool_rejects_a_second_concurrent_dispatch(
 
 
 async def _collect_loop(patch_llm: FakeLLM) -> list:
-    from loom.agent import run_loop
-
-    return [
-        event
-        async for event in run_loop(
-            provider="fake", model=MODEL, system="sys", messages=[], tools=[]
-        )
-    ]
+    agent = Agent(provider="fake", model=MODEL)
+    return [event async for event in agent.run(system="sys", messages=[], tools=[])]
 
 
-def test_run_loop_retries_transient_failures_then_recovers(patch_llm: FakeLLM) -> None:
+def test_agent_retries_transient_failures_then_recovers(patch_llm: FakeLLM) -> None:
     from loom.agent import AgentError, AssistantEnd, RetryAttempt
 
     use_script(patch_llm, [RuntimeError("flake"), RuntimeError("flake"), "recovered"])
@@ -461,7 +375,7 @@ def test_run_loop_retries_transient_failures_then_recovers(patch_llm: FakeLLM) -
     assert len(patch_llm.calls) == 3
 
 
-def test_run_loop_gives_up_after_consecutive_errors(patch_llm: FakeLLM) -> None:
+def test_agent_gives_up_after_consecutive_errors(patch_llm: FakeLLM) -> None:
     from loom.agent import AgentError
 
     use_script(patch_llm, [RuntimeError("down")] * 5)
@@ -475,18 +389,9 @@ def test_malformed_response_stores_error_episode_not_crash(
 ) -> None:
     use_script(patch_llm, [{"empty_choices": True}] * 5)
     episodes = store(tmp_path)
-    answer = asyncio.run(
-        run_dispatch(
-            provider="fake",
-            model=MODEL,
-            worker_tools=[],
-            store=episodes,
-            name="impl",
-            action="build",
-            session=SID,
-        )
-    )
+    answer, episode_id = asyncio.run(dispatcher(episodes).dispatch(name="impl", action="build"))
     assert answer.startswith("Error: thread 'impl' produced no episode")
+    assert episode_id is None
     persisted = episodes.by_session(SID)
     assert len(persisted) == 1 and persisted[0].status == "error"
     assert episodes.read_trace(persisted[0].id) != []

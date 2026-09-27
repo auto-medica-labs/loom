@@ -269,7 +269,6 @@ version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "any-llm-sdk" },
-    { name = "rich" },
 ]
 
 [package.dev-dependencies]
@@ -280,10 +279,7 @@ dev = [
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "any-llm-sdk" },
-    { name = "rich", specifier = ">=13.0" },
-]
+requires-dist = [{ name = "any-llm-sdk" }]
 
 [package.metadata.requires-dev]
 dev = [
